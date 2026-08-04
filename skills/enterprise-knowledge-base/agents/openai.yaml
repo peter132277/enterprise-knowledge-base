@@ -1,0 +1,7 @@
+interface:
+  display_name: "企业知识库"
+  short_description: "一个入口完成安装、本地知识管理与确认式飞书发布"
+  default_prompt: "Use $enterprise-knowledge-base to set up or operate the current local enterprise knowledge Vault, including attachment collection, audited questions, media transcription, and explicitly confirmed Feishu publication."
+
+policy:
+  allow_implicit_invocation: true
