@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -17,6 +16,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+
+from kb_core import (
+    CoreError,
+    atomic_write_json as write_json_atomic,
+    load_json as core_load_json,
+    sha256_bytes,
+    sha256_file,
+)
 
 
 TEXT_EXTENSIONS = {".txt", ".md", ".markdown"}
@@ -100,23 +107,6 @@ class PipelineError(RuntimeError):
     pass
 
 
-def write_json_atomic(path: Path, value: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    handle, temp_name = tempfile.mkstemp(
-        prefix=path.name + ".",
-        suffix=".tmp",
-        dir=path.parent,
-    )
-    try:
-        with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as stream:
-            json.dump(value, stream, ensure_ascii=False, indent=2)
-            stream.write("\n")
-        os.replace(temp_name, path)
-    except Exception:
-        Path(temp_name).unlink(missing_ok=True)
-        raise
-
-
 def preflight_performance_path(vault: Path, digest: str) -> Path:
     return vault / ".kb" / "temp" / "ingest-performance" / f"{digest}.json"
 
@@ -143,18 +133,6 @@ def record_preflight_performance(
         },
     )
     return relative.as_posix()
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
 
 
 def source_format(path: Path) -> dict[str, Any] | None:
@@ -375,12 +353,10 @@ def validate_extraction_profile(
 
 
 def load_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
-    if not path.exists():
-        return default
     try:
-        value = json.loads(path.read_text(encoding="utf-8-sig"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise PipelineError(f"Invalid JSON state: {path}: {exc}") from exc
+        value = core_load_json(path, default)
+    except CoreError as exc:
+        raise PipelineError(str(exc)) from exc
     if not isinstance(value, dict):
         raise PipelineError(f"JSON state must be an object: {path}")
     return value
@@ -1403,13 +1379,69 @@ def build_parser() -> argparse.ArgumentParser:
     repair_parser.add_argument("--vault", required=True, type=Path)
     repair_parser.add_argument("--write", action="store_true")
     repair_parser.add_argument("--repair-missing-text-extractions", action="store_true")
+
+    capture = subparsers.add_parser("capture-link")
+    capture.add_argument("--vault", required=True, type=Path)
+    capture.add_argument("--url", required=True)
+    capture.add_argument("--output-dir", required=True, type=Path)
+    capture.add_argument("--name")
+    capture.add_argument("--timeout", type=int, default=30)
+
+    github = subparsers.add_parser("capture-github-subtree")
+    github.add_argument("--vault", required=True, type=Path)
+    github.add_argument("--repo", required=True)
+    github.add_argument("--ref", required=True)
+    github.add_argument("--subpath", required=True)
+    github.add_argument("--source-url", action="append", default=[])
+    github.add_argument("--output-dir", required=True, type=Path)
+    github.add_argument("--name")
+
+    expand = subparsers.add_parser("expand-web-corpus")
+    expand.add_argument("--vault", required=True, type=Path)
+    expand.add_argument("--archive", required=True)
+    expand.add_argument("--archive-sha256", required=True)
+    expand.add_argument("--source-prefix", required=True)
+    expand.add_argument("--target", required=True)
+    expand.add_argument("--landing", required=True)
+    expand.add_argument("--title", required=True)
+    expand.add_argument("--expected-tree-sha256")
+    expand.add_argument("--write", action="store_true")
+    expand.add_argument("--replace", action="store_true")
+
+    link_repair = subparsers.add_parser("repair-web-corpus")
+    link_repair.add_argument("--vault", required=True, type=Path)
+    link_repair.add_argument("--rules", required=True, type=Path)
+    link_repair.add_argument("--write", action="store_true")
+    link_repair.add_argument("--details", action="store_true")
     return parser
 
 
 def main() -> int:
     args = build_parser().parse_args()
     try:
-        if args.command == "preflight":
+        from runtime_access import authorize
+        from vault_context import discover_vault
+
+        args.vault = discover_vault(args.vault)
+        authorize(args.vault, "collect")
+        if args.command in {"capture-link", "capture-github-subtree"}:
+            import capture_link
+
+            result = (
+                capture_link.capture_single(args)
+                if args.command == "capture-link"
+                else capture_link.capture_github_subtree(args)
+            )
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        elif args.command == "expand-web-corpus":
+            import expand_web_corpus
+
+            print(json.dumps(expand_web_corpus.expand(args), ensure_ascii=False, indent=2))
+        elif args.command == "repair-web-corpus":
+            import repair_web_corpus_links
+
+            print(json.dumps(repair_web_corpus_links.run(args), ensure_ascii=False, indent=2))
+        elif args.command == "preflight":
             result = preflight(args.vault, args.source, args.include_text)
             rendered = json.dumps(result, ensure_ascii=False, indent=2)
             if args.out:
@@ -1431,7 +1463,7 @@ def main() -> int:
                 )
             )
         return 0
-    except PipelineError as exc:
+    except RuntimeError as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False, indent=2), file=sys.stderr)
         return 2
 

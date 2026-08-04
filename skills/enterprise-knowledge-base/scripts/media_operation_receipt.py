@@ -4,17 +4,16 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
-import os
 import re
 import sys
-import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+
+from kb_core import CoreError, atomic_write_json, load_json as core_load_json, sha256_file
 
 
 HASH_RE = re.compile(r"[0-9a-f]{64}")
@@ -36,32 +35,11 @@ class ReceiptError(RuntimeError):
     pass
 
 
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def load_json(path: Path) -> Any:
     try:
-        return json.loads(path.read_text(encoding="utf-8-sig"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        return core_load_json(path)
+    except CoreError as exc:
         raise ReceiptError(f"Unable to read JSON: {path}") from exc
-
-
-def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    handle, temp_name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
-    try:
-        with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as stream:
-            json.dump(payload, stream, ensure_ascii=False, indent=2)
-            stream.write("\n")
-        os.replace(temp_name, path)
-    except Exception:
-        Path(temp_name).unlink(missing_ok=True)
-        raise
 
 
 def now_record() -> dict[str, Any]:

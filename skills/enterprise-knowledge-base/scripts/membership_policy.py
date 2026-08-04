@@ -3,9 +3,9 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from typing import Any, Protocol
+
+from kb_core import canonical_hash
 
 
 SHARE_SCOPE_SCHEMA = "kb-share-scope/v1"
@@ -35,13 +35,6 @@ class MembershipAdapter(Protocol):
     def apply_membership_plan(self, plan: dict[str, Any]) -> int: ...
 
     def member_list(self, space_id: str) -> dict[str, Any]: ...
-
-
-def canonical_hash(value: Any) -> str:
-    encoded = json.dumps(
-        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
 
 
 def validate_policy(policy: str) -> str:

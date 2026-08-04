@@ -4,14 +4,12 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -19,6 +17,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from kb_core import (
+    atomic_write_json as write_json_atomic,
+    canonical_hash as sha256_json,
+    sha256_bytes,
+    sha256_file,
+)
 from vault_context import discover_vault
 
 
@@ -26,8 +30,6 @@ MARKDOWN_EXTENSIONS = {".md", ".markdown"}
 FRONTMATTER_TITLE = re.compile(r"^title:\s*[\"']?(.*?)[\"']?\s*$", re.MULTILINE)
 H1 = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
 TOKEN = re.compile(r"[A-Za-z0-9_+.-]+|[\u3400-\u9fff]+")
-PERSONAL_MARKERS = ("我的知识", "个人知识", "个人库")
-ENTERPRISE_MARKERS = ("企业知识", "公司知识", "企业库", "公司库")
 MAX_RECALL_TERMS = 24
 MAX_RECALL_RESULTS = 2000
 OBSIDIAN_CLI_TIMEOUT_SECONDS = 12
@@ -37,43 +39,8 @@ class QueryError(RuntimeError):
     pass
 
 
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def sha256_json(value: dict[str, Any]) -> str:
-    data = json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(data).hexdigest()
-
-
 def query_sha256(query: str) -> str:
-    return hashlib.sha256(query.strip().encode("utf-8")).hexdigest()
-
-
-def write_json_atomic(path: Path, value: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    handle, temp_name = tempfile.mkstemp(
-        prefix=path.name + ".",
-        suffix=".tmp",
-        dir=path.parent,
-    )
-    try:
-        with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as stream:
-            json.dump(value, stream, ensure_ascii=False, indent=2)
-            stream.write("\n")
-        os.replace(temp_name, path)
-    except Exception:
-        Path(temp_name).unlink(missing_ok=True)
-        raise
+    return sha256_bytes(query.strip().encode("utf-8"))
 
 
 def normalize(value: str) -> str:
@@ -120,36 +87,8 @@ def recall_terms(query: str) -> list[str]:
     return terms[:MAX_RECALL_TERMS]
 
 
-def infer_scope(query: str, requested: str) -> str:
-    if requested != "auto":
-        return requested
-    normalized = normalize(query)
-    personal = any(marker in normalized for marker in PERSONAL_MARKERS)
-    enterprise = any(marker in normalized for marker in ENTERPRISE_MARKERS)
-    if personal and not enterprise:
-        return "personal"
-    if enterprise and not personal:
-        return "enterprise"
-    return "all"
-
-
-def search_roots(vault: Path, scope: str, include_sources: bool) -> list[Path]:
-    relative_roots = {
-        "personal": (
-            "20_知识/个人",
-            "20_知识/原子",
-            "30_导航/主题/个人主题",
-            "30_导航/知识库首页.md",
-        ),
-        "enterprise": (
-            "20_知识/企业",
-            "20_知识/原子",
-            "30_导航/主题/企业主题",
-            "30_导航/知识库首页.md",
-        ),
-        "all": ("20_知识", "30_导航"),
-    }[scope]
-    roots = [vault / Path(relative) for relative in relative_roots]
+def search_roots(vault: Path, include_sources: bool) -> list[Path]:
+    roots = [vault / "20_知识", vault / "30_导航"]
     if include_sources:
         roots.append(vault / "10_来源" / "提取")
     return roots
@@ -574,8 +513,8 @@ def finalize_result(
 def persist_receipt(
     vault: Path,
     result: dict[str, Any],
-    requested_scope: str,
     max_results: int,
+    sync_credential: dict[str, Any] | None = None,
 ) -> tuple[str, str, str]:
     now = datetime.now().astimezone()
     question_hash = query_sha256(str(result["query"]))
@@ -601,7 +540,7 @@ def persist_receipt(
         "vault": result["vault"],
         "query": result["query"],
         "query_sha256": question_hash,
-        "requested_scope": requested_scope,
+        "requested_scope": "all",
         "scope": result["scope"],
         "include_sources": result["include_sources"],
         "searched_roots": result["searched_roots"],
@@ -612,6 +551,8 @@ def persist_receipt(
         "result_count": result["result_count"],
         "total_matches": result["total_matches"],
         "external_sources_used": result["external_sources_used"],
+        "managed_query": sync_credential is not None,
+        "sync_credential": sync_credential,
         "performance": result.get("performance", {}),
         "results": [
             {
@@ -638,6 +579,7 @@ def run_query(
     backend: str = "auto",
     enforce_project: bool = True,
     write_receipt: bool = True,
+    sync_credential: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     query_started = time.perf_counter()
     resolved_vault = vault.resolve()
@@ -651,8 +593,8 @@ def run_query(
     if max_results < 1 or max_results > 20:
         raise QueryError("max_results must be between 1 and 20")
 
-    scope = infer_scope(query, requested_scope)
-    roots = search_roots(resolved_vault, scope, include_sources)
+    scope = "all"
+    roots = search_roots(resolved_vault, include_sources)
     terms = query_terms(query)
     recall = recall_terms(query)
     retrieval_started = time.perf_counter()
@@ -712,8 +654,8 @@ def run_query(
         query_id, receipt_path, receipt_hash = persist_receipt(
             resolved_vault,
             result,
-            requested_scope,
             max_results,
+            sync_credential,
         )
         result["performance"]["receipt_duration_ms"] = round(
             (time.perf_counter() - receipt_started) * 1000,
@@ -737,11 +679,6 @@ def run_query(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--query", required=True)
-    parser.add_argument(
-        "--scope",
-        choices=("auto", "personal", "enterprise", "all"),
-        default="auto",
-    )
     parser.add_argument("--include-sources", action="store_true")
     parser.add_argument("--max-results", type=int, default=8)
     parser.add_argument(
@@ -764,7 +701,7 @@ def main() -> int:
         result = run_query(
             project_vault,
             args.query,
-            args.scope,
+            "all",
             args.include_sources,
             args.max_results,
             backend=args.backend,

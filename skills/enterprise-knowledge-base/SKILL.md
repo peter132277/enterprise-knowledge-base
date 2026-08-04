@@ -24,15 +24,15 @@ Define the enterprise knowledge base as a Feishu administrator deployment shared
 Configure exactly `全公司内部员工` with `查询、收录并发布`. Do not create editor subgroups or weaker employee policies. If the whole-company scope cannot be resolved to one verified internal organization root, fail closed and require the administrator to repair directory visibility or authorization; never narrow the company silently.
 
 ## Route normal work
-
 Before every normal query, collection, media, sync, preview, confirmation, retry, or publication action, read and follow [runtime-access.md](references/runtime-access.md). Setup inspection and local health diagnostics are the only exceptions.
+The only public script entries are `setup_wizard.py`, `query_answer_packet.py`, `ingest_pipeline.py`, `prepare_media_transcript.py`, `company_sync_coordinator.py`, `execute_publish.py`, and `check_vault_health.py`; all other scripts are internal components.
 
 - Attachment-only message: treat it as a complete collection request. Route audio and video through [media-transcription.md](references/media-transcription.md); route every other attachment through the local collection workflow below.
-- Factual, explanatory, comparative, summary, recommendation, or lookup question: authorize `query`, refresh the read-only company mirror, then follow [query-workflow.md](references/query-workflow.md). An ordinary direct question searches both local personal and enterprise knowledge (`scope: all`) without requiring a command prefix. Answer only after the current-Vault query receipt and citation audit pass.
+- Factual, explanatory, comparative, summary, recommendation, or lookup question: follow [query-workflow.md](references/query-workflow.md). Every direct question uses fixed internal `scope: all` to search all personal and enterprise knowledge without a command prefix or a knowledge-type choice. Answer only after the current-Vault query and sync receipts plus citation audit pass.
 - File, local path, public link, `收录`, `整理`, `处理`, or saved text: read [capture-modes.md](references/capture-modes.md), then [adaptive-processing.md](references/adaptive-processing.md) only when the source requires it. Never contact Feishu from the collection route.
 - Clear publication intent such as `批量发布`, `发布飞书`, or `发布到飞书`: create the read-only immutable preview immediately using the publication scripts. Ask once for `确认批量发布`.
 - `确认批量发布` or exact-batch recovery: follow the publication contract below. Never extend that authorization to another batch, space, upload, deletion, or permission change.
-- Publication-state inspection without publication intent: run `publish_state.py audit`; do not contact Feishu.
+- Publication-state inspection without publication intent: use the health entry's local publication audit; do not contact Feishu.
 - `检查知识库健康度`: run `check_vault_health.py --vault <current-vault>`.
 - Explicit public-web research: keep it separate. Do not save or mix its findings without a separate collection request.
 
@@ -67,10 +67,9 @@ Resolve membership targets read-only, then show a human preview with scope, memb
 Use `feishu_company_adapter.py` as the only member transport. It resolves the verified organization root with user identity, skips an already matching grant, applies only the immutable `member` grant after exact confirmation, reads every member page, and verifies a private team space with external sharing closed. Never reconstruct its lark-cli commands manually.
 
 ## Keep one shared company knowledge layer
+Treat the verified private Feishu Wiki as the shared enterprise publication layer and the current Vault as the audited local working copy. The query entry calls `company_sync_coordinator.py before-query` once per Codex task before its first all-knowledge query; employee setup uses `initial-employee`, and `同步公司知识` uses `explicit`. It reads the exact mapped Wiki with user identity and mirrors only published Docx content under `20_知识/企业/共享镜像` before local retrieval. Same-task later queries use zero remote reads and no full-mirror rehash.
 
-Treat the verified private Feishu Wiki as the shared enterprise publication layer and the current Vault as the audited local working copy. Use `company_sync_coordinator.py`: `initial-employee` after verified employee setup, `before-query` once per Codex task before its first enterprise query, and `explicit` when the user says `同步公司知识`. It reads the exact mapped Wiki with user identity and mirrors only published Docx content under `20_知识/企业/共享镜像` before local retrieval. Personal queries never sync.
-
-Never overwrite a locally edited mirror, silently accept a disappeared remote node, cross spaces, or sync an unsupported node type. Managed mirrors are publication-excluded and never re-enter the queue. Reuse an existing verified local publication as authoritative on the publishing device to avoid duplicate query evidence. Collection remains transactional locally; publication still requires its own immutable preview and `确认批量发布`. After verified publication, update the publisher's authoritative and sync state locally; other employees receive it only on their next session-first enterprise query or explicit sync. No background push or polling is allowed.
+Never overwrite a locally edited mirror, silently accept a disappeared remote node, cross spaces, or sync an unsupported node type. Managed mirrors are publication-excluded and never re-enter the queue. Reuse an existing verified local publication as authoritative on the publishing device to avoid duplicate query evidence. Collection remains transactional locally; publication still requires its own immutable preview and `确认批量发布`. After verified publication, update the publisher's authoritative and sync state locally; other employees receive it only on their next task-first query or explicit sync. No background push or polling is allowed.
 
 Personal knowledge is purely local for administrators and employees alike. Every personal note, attachment, document, and media-derived note must use `scope: personal` and `publish_to_feishu: false`; it may not enter the queue, preview, confirmed manifest, executor, mapping, shared mirror, or company sync state. Role never overrides this content boundary.
 

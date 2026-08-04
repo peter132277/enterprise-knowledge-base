@@ -12,13 +12,25 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 import urllib.parse
 import urllib.request
 import webbrowser
 from pathlib import Path
 from typing import Any
 
+from kb_core import (
+    COMPANY_CONFIG_SCHEMA as COMPANY_SCHEMA,
+    ORGANIZATION_SCHEMA as ORG_SCHEMA,
+    PROJECT_BINDING_SCHEMA,
+    CoreError,
+    atomic_write_bytes,
+    atomic_write_json,
+    canonical_path,
+    load_json,
+    mapping_value,
+    sha256_file,
+    validate_company_config,
+)
 from membership_policy import (
     MEMBERSHIP_VERIFICATION_SCHEMA,
     SHARE_SCOPE_SCHEMA,
@@ -36,11 +48,8 @@ from membership_policy import (
 from feishu_company_adapter import CompanyAdapterError, LarkMembershipAdapter
 
 
-PLUGIN_VERSION = "0.3.1"
+PLUGIN_VERSION = "0.4.0"
 SCHEMA = "kb-setup-state/v3"
-ORG_SCHEMA = "kb-organization/v3"
-COMPANY_SCHEMA = "kb-company-config/v3"
-PROJECT_BINDING_SCHEMA = "kb-project-binding/v1"
 OBSIDIAN_INTEGRATION_SCHEMA = "kb-obsidian-integration/v1"
 CLAUDIAN_PLUGIN_ID = "realclaudian"
 CLAUDIAN_VERSION = "2.0.44"
@@ -71,48 +80,8 @@ SYSTEM_DIRECTORIES = (
 )
 ROLES = {"admin", "employee", "local"}
 PUBLISH_POLICIES = {"members"}
-SECRET_KEYS = {
-    "app_secret",
-    "access_token",
-    "refresh_token",
-    "tenant_access_token",
-    "user_access_token",
-    "cookie",
-    "password",
-}
-
-
 class SetupError(RuntimeError):
     pass
-
-
-def load_json(path: Path, default: Any = None) -> Any:
-    if not path.is_file():
-        return default
-    return json.loads(path.read_text(encoding="utf-8-sig"))
-
-
-def atomic_write_json(path: Path, value: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    data = json.dumps(value, ensure_ascii=False, indent=2) + "\n"
-    with tempfile.NamedTemporaryFile(
-        "w", encoding="utf-8", newline="\n", delete=False, dir=path.parent
-    ) as handle:
-        handle.write(data)
-        temporary = Path(handle.name)
-    os.replace(temporary, path)
-
-
-def atomic_write_bytes(path: Path, data: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile("wb", delete=False, dir=path.parent) as handle:
-        handle.write(data)
-        temporary = Path(handle.name)
-    os.replace(temporary, path)
-
-
-def canonical_path(path: Path) -> str:
-    return os.path.normcase(str(path.expanduser().resolve()))
 
 
 def project_binding(vault: Path) -> dict[str, Any]:
@@ -292,109 +261,17 @@ def initialize(vault: Path, role: str, company_name: str) -> dict[str, Any]:
     return inspect(vault)
 
 
-def reject_secrets(value: Any, path: str = "root") -> None:
-    if isinstance(value, dict):
-        for key, candidate in value.items():
-            lowered = str(key).casefold()
-            if lowered in SECRET_KEYS or "secret" in lowered:
-                raise SetupError(f"Company configuration contains a forbidden secret: {path}.{key}")
-            reject_secrets(candidate, f"{path}.{key}")
-    elif isinstance(value, list):
-        for index, candidate in enumerate(value):
-            reject_secrets(candidate, f"{path}[{index}]")
-
-
 def validate_company(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict) or value.get("schema") != COMPANY_SCHEMA:
-        raise SetupError("Unsupported company configuration schema.")
-    reject_secrets(value)
-    allowed = {
-        "schema",
-        "minimum_plugin_version",
-        "company_name",
-        "feishu_brand",
-        "app_id",
-        "tenant_key_hash",
-        "space_name",
-        "space_id",
-        "nodes",
-        "space_mapping_hash",
-        "share_scope",
-        "effective_employee_policy",
-        "membership_verification",
-    }
-    if set(value) - allowed:
-        raise SetupError("Company configuration contains unsupported or excessive data.")
-    required = (
-        "company_name",
-        "feishu_brand",
-        "app_id",
-        "tenant_key_hash",
-        "space_name",
-        "space_id",
-        "minimum_plugin_version",
-    )
-    if any(not str(value.get(key, "")).strip() for key in required):
-        raise SetupError("Company configuration is incomplete.")
-    if value["feishu_brand"] not in {"feishu", "lark"}:
-        raise SetupError("Unsupported Feishu brand.")
-    if not re.fullmatch(r"cli_[A-Za-z0-9]+", str(value["app_id"])):
-        raise SetupError("Invalid application ID.")
-    if not re.fullmatch(r"[0-9]+", str(value["space_id"])):
-        raise SetupError("Invalid knowledge-space ID.")
-    if not re.fullmatch(r"[a-f0-9]{64}", str(value["tenant_key_hash"])):
-        raise SetupError("Invalid tenant identity hash.")
-    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", str(value["minimum_plugin_version"])):
-        raise SetupError("Invalid minimum plugin version.")
-    if tuple(int(part) for part in str(value["minimum_plugin_version"]).split(".")) > tuple(
-        int(part) for part in PLUGIN_VERSION.split(".")
-    ):
-        raise SetupError("This company configuration requires a newer plugin version.")
-    policy = str(value.get("effective_employee_policy", ""))
     try:
-        validate_policy(policy)
-        share_scope = validate_share_scope(value.get("share_scope"))
-    except MembershipError as exc:
-        raise SetupError(str(exc)) from exc
-    if policy != "members" or share_scope.get("type") != "all-employees":
-        raise SetupError(
-            "All internal employees must have query, collect, and publish capability."
+        return validate_company_config(
+            value,
+            validate_policy=validate_policy,
+            validate_share_scope=validate_share_scope,
+            membership_verification_schema=MEMBERSHIP_VERIFICATION_SCHEMA,
+            plugin_version=PLUGIN_VERSION,
         )
-    nodes = value.get("nodes", [])
-    if not isinstance(nodes, list) or any(
-        not isinstance(node, dict)
-        or not str(node.get("node_name", "")).strip()
-        or not str(node.get("node_token", "")).strip()
-        or node.get("verified") is not True
-        for node in nodes
-    ):
-        raise SetupError("Company node mapping is invalid or unverified.")
-    mapping_hash = canonical_hash(
-        {
-            "space_name": value["space_name"],
-            "space_id": str(value["space_id"]),
-            "nodes": nodes,
-        }
-    )
-    if value.get("space_mapping_hash") != mapping_hash:
-        raise SetupError("Company space mapping hash is invalid.")
-    verification = value.get("membership_verification", {})
-    if (
-        not isinstance(verification, dict)
-        or verification.get("schema") != MEMBERSHIP_VERIFICATION_SCHEMA
-        or verification.get("verified") is not True
-        or str(verification.get("space_id", "")) != str(value["space_id"])
-        or verification.get("share_scope_hash")
-        != canonical_hash(value["share_scope"])
-        or verification.get("mapping_hash") != mapping_hash
-        or verification.get("effective_employee_policy") != policy
-        or not str(verification.get("remote_version", "")).strip()
-        or not re.fullmatch(r"[a-f0-9]{64}", str(verification.get("member_list_hash", "")))
-        or verification.get("external_members") != 0
-        or verification.get("employee_admin_members") != 0
-    ):
-        raise SetupError("Company membership verification is incomplete or stale.")
-    return value
+    except CoreError as exc:
+        raise SetupError(str(exc)) from exc
 
 
 def import_company(vault: Path, source: Path) -> dict[str, Any]:
@@ -436,15 +313,6 @@ def import_company(vault: Path, source: Path) -> dict[str, Any]:
         "imported": True,
         "membership_verified": False,
         "requires_employee_oauth_and_membership_verification": True,
-    }
-
-
-def mapping_value(vault: Path) -> dict[str, Any]:
-    mapping = load_json(vault / ".kb/mappings/feishu_nodes.json", {})
-    return {
-        "space_name": mapping.get("space_name", ""),
-        "space_id": str(mapping.get("space_id", "")),
-        "nodes": mapping.get("nodes", []),
     }
 
 
@@ -851,14 +719,6 @@ def inspect_claudian(vault: Path) -> dict[str, Any]:
             "plugin_path": "",
             "error": str(exc),
         }
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def configure_claudian_settings(vault: Path, codex_path: Path) -> tuple[Path, bool]:

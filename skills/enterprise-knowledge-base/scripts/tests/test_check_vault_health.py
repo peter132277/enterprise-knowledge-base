@@ -1,19 +1,40 @@
 import importlib.util
 import hashlib
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "check_vault_health.py"
+sys.path.insert(0, str(SCRIPT.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 SPEC = importlib.util.spec_from_file_location("check_vault_health", SCRIPT)
 HEALTH = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader
 SPEC.loader.exec_module(HEALTH)
 
+import company_sync_coordinator as coordinator
+from company_test_support import FakeKnowledgeReader, configure_admin, configure_employee
+
 
 class CheckVaultHealthTests(unittest.TestCase):
+    def test_company_health_performs_strict_full_hash_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            admin = configure_admin(root / "admin")
+            employee = configure_employee(admin, root / "employee")
+            coordinator.explicit_sync(employee, FakeKnowledgeReader())
+            healthy = HEALTH.check_company_sync(employee)
+            self.assertEqual(healthy["records"], 1)
+            self.assertEqual(healthy["errors"], [])
+            mirror = employee / coordinator.MIRROR_ROOT / "node-1.md"
+            mirror.write_text(mirror.read_text(encoding="utf-8") + "edited\n", encoding="utf-8")
+            edited = HEALTH.check_company_sync(employee)
+            self.assertEqual(edited["records"], 0)
+            self.assertTrue(edited["errors"])
+
     def test_external_web_corpus_links_are_not_local_link_errors(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             vault = Path(folder)

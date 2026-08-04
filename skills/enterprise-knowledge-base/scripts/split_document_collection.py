@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -14,6 +13,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from kb_core import sha256_bytes, sha256_file
+
 
 HEADING = re.compile(r"^##\s+(\d{3})｜(.+?)\s*$", re.MULTILINE)
 HASH_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -21,18 +22,6 @@ HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 
 class CollectionError(RuntimeError):
     pass
-
-
-def sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def normalize_relative(value: str, prefixes: tuple[str, ...]) -> str:

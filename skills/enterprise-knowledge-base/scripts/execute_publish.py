@@ -956,19 +956,39 @@ def execute_batch(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "command",
+        nargs="?",
+        choices=("preview", "confirm", "execute"),
+        default="execute",
+    )
     parser.add_argument("--vault", type=Path, default=Path("."))
-    parser.add_argument("--batch", type=Path, required=True)
+    parser.add_argument("--batch", type=Path)
+    parser.add_argument("--phrase", default="")
     args = parser.parse_args()
     try:
-        from company_sync_coordinator import record_publisher_convergence
+        from company_sync_coordinator import (
+            record_publisher_convergence,
+            validate_local_state,
+        )
         from runtime_access import authorize
+        from vault_context import discover_vault
 
-        authorize(args.vault.resolve(), "publish")
-        result = execute_batch(args.vault, args.batch)
+        vault = discover_vault(args.vault)
+        authorize(vault, "publish")
+        if (vault / ".kb/state/company_sync.json").is_file():
+            validate_local_state(vault, verify_file_hashes=True)
+        if args.command == "preview":
+            result = batch.create_preview(vault)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 0
+        if args.batch is None:
+            raise ExecutionError("--batch is required for confirmation or execution.")
+        if args.command == "confirm":
+            batch.confirm_batch(vault, args.batch, args.phrase)
+        result = execute_batch(vault, args.batch)
         if result["ok"]:
-            result["publisher_convergence"] = record_publisher_convergence(
-                args.vault.resolve()
-            )
+            result["publisher_convergence"] = record_publisher_convergence(vault)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0 if result["ok"] else 2
     except (batch.BatchError, ExecutionError, OSError, UnicodeError) as exc:

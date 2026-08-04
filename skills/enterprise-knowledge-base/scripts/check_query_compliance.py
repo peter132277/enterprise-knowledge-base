@@ -14,6 +14,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import company_sync_coordinator as sync_coordinator
+from kb_core import load_json
 from query_current_vault import (
     query_sha256,
     sha256_file,
@@ -83,6 +85,31 @@ def verify_receipt(
         raise ComplianceError("Receipt question hash does not match")
     if bool(receipt.get("external_sources_used", True)):
         raise ComplianceError("Receipt used an external source")
+    sync_credential_hash = ""
+    if receipt.get("managed_query") is True:
+        try:
+            credential = sync_coordinator.validate_session_receipt(
+                receipt.get("sync_credential")
+            )
+            current = sync_coordinator.validate_session_receipt(
+                load_json(vault / ".kb/state/company_sync_session.json", {})
+            )
+        except RuntimeError as exc:
+            raise ComplianceError(str(exc)) from exc
+        sync_credential_hash = str(credential["credential_sha256"])
+        if current.get("credential_sha256") != sync_credential_hash:
+            raise ComplianceError("Query sync credential is stale or belongs to another task")
+        if credential.get("sync_status") != "local-only":
+            state = sync_coordinator.validate_local_state(vault)
+            if (
+                credential.get("space_id") != state.get("space_id")
+                or credential.get("tree_hash") != state.get("tree_hash")
+                or credential.get("mapping_hash") != state.get("mapping_hash")
+                or credential.get("access_snapshot") != state.get("access_snapshot")
+            ):
+                raise ComplianceError("Query sync credential conflicts with current company state")
+    else:
+        credential = None
     retrieval_backend = str(receipt.get("retrieval_backend", "legacy-python"))
     if retrieval_backend not in {
         "obsidian-cli",
@@ -100,6 +127,12 @@ def verify_receipt(
         if not is_allowed_knowledge_path(relative):
             raise ComplianceError(f"Disallowed search root: {relative}")
 
+    citations = [normalize_vault_path(vault, value) for value in cited_paths]
+    rejections = [
+        normalize_vault_path(vault, value)
+        for value in (rejected_paths or [])
+    ]
+    evidence_paths = set(citations) | set(rejections)
     results = receipt.get("results", [])
     if not isinstance(results, list):
         raise ComplianceError("Receipt results must be a list")
@@ -115,15 +148,12 @@ def verify_receipt(
         path = vault / Path(relative)
         if not path.is_file():
             raise ComplianceError(f"Result file is missing: {relative}")
-        if sha256_file(path) != str(item.get("file_sha256", "")):
+        if (
+            relative in evidence_paths
+            and sha256_file(path) != str(item.get("file_sha256", ""))
+        ):
             raise ComplianceError(f"Result file changed after retrieval: {relative}")
         result_paths.add(relative)
-
-    citations = [normalize_vault_path(vault, value) for value in cited_paths]
-    rejections = [
-        normalize_vault_path(vault, value)
-        for value in (rejected_paths or [])
-    ]
     if results:
         if no_result:
             if citations:
@@ -166,6 +196,7 @@ def verify_receipt(
         "cited_paths": citations,
         "rejected_paths": rejections,
         "no_result": no_result,
+        "sync_credential_sha256": sync_credential_hash,
     }
     audit_id = hashlib.sha256(
         json.dumps(
@@ -186,6 +217,7 @@ def verify_receipt(
         "approved_citations": citations,
         "rejected_candidates": rejections,
         "external_sources_used": False,
+        "sync_credential_sha256": sync_credential_hash,
         "answer_contract": {
             "retrieval_scope": "当前知识库",
             "query_receipt": query_id,

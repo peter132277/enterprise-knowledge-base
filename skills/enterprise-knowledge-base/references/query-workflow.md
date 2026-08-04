@@ -1,44 +1,21 @@
-# Managed query workflow
+# Managed all-knowledge query
 
-Use only for a factual, explanatory, comparative, summary, recommendation, or lookup request. Search only this Vault; never use another workspace, backup, public web, connected drive, or model memory. The only Feishu access allowed here is the managed read-only company mirror refresh before an enterprise query.
+Use only for factual, explanatory, comparative, summary, recommendation, or lookup requests. Every formal query fixes internal `scope: all` and searches all personal and enterprise knowledge in the current bound Vault; never ask the user to choose a knowledge type and never broaden to another workspace, backup, public web, connected drive, or model memory.
 
-Before retrieval, run the `query` access gate. An ordinary direct question uses `all` and searches both local personal and enterprise knowledge without a command prefix. For `personal`, do not contact Feishu. For `enterprise` or `all`, run exactly one session coordinator check using a stable identifier for the current Codex task:
-
-```text
-python <skill-root>/scripts/company_sync_coordinator.py before-query --vault <current-vault> --scope <personal|enterprise|all> --session-id <current-task-id>
-```
-
-A new session performs one incremental foreground pull before its first enterprise query. Later enterprise queries in the same session reuse the verified local mirror. Never invent a timer, run a background poller, or copy an administrator's Vault.
-
-Run the one-command fast path first:
+Run the single public entry with a stable identifier for the current Codex task:
 
 ```powershell
 python <skill-root>/scripts/query_answer_packet.py `
   --query "<exact user question>" `
-  --scope all
+  --session-id "<current-task-id>"
 ```
 
-Keep `--scope all` for an ordinary direct question so personal and enterprise knowledge are searched together. Use `--scope personal` or `enterprise` only when the user explicitly asks to restrict the search. Add `--include-sources` only for complete wording or provenance. Never replace the managed script with direct Obsidian CLI or `rg`.
+The entry authorizes access, performs the new-task foreground company sync when configured, retrieves locally, hashes bounded results, writes the query receipt, and audits clear citations. A new task reads the mapped Wiki tree once; later queries in the same task validate the hashed sync credential, mapping, access evidence, and state tree with zero remote reads and without rehashing the full mirror. Local-only mode records a zero-remote local credential. Never add a timer, background poller, or cross-task freshness cache.
 
-- `status: audited-fast-path`: read only the approved local files needed for the answer, then answer only from `approved_citations`. If they do not actually support the question, use the manual path instead.
-- `status: audited-no-result`: state `当前知识库无相关内容` and do not broaden.
-- `status: manual-audit-required`: inspect the returned candidates, then audit the exact question and every intended citation:
+- `audited-fast-path`: answer only from `approved_citations`.
+- `audited-no-result`: state `当前知识库无相关内容` and do not broaden.
+- `manual-audit-required`: inspect returned candidates, then call the same entry with `--receipt` and each intended `--cited-path`. For semantic no-result, add `--no-result` and one `--reject-path` for every candidate.
 
-```powershell
-python <skill-root>/scripts/check_query_compliance.py `
-  --question "<exact user question>" `
-  --receipt "<receipt_path from query output>" `
-  --cited-path "<returned local path>"
-```
+The internal compliance component verifies both the query receipt and current sync credential, then recalculates SHA-256 only for cited or rejected files. Do not answer on a stale task credential, changed evidence, unreturned citation, mapping or permission conflict, or any external source.
 
-Repeat `--cited-path` as needed. For zero results, omit citations and pass `--no-result`. Do not answer unless the audit returns `ok: true`; fail closed on receipt mismatch, changed or unreturned evidence, or external sources.
-
-If lexical candidates exist but every one is semantically irrelevant, pass `--no-result` plus one `--reject-path "<returned-path>"` for every candidate. The audit permits semantic zero-result only when the rejected set exactly matches the receipt.
-
-- `检索范围：当前知识库`
-- `检索凭证：<query_id>`
-- `合规审计：<audit_id>`
-- `外部来源：未使用`
-- clickable local evidence links approved by the audit
-
-Use only audited paths. For zero results, state `当前知识库无相关内容` with the same receipt fields and do not broaden the query.
+Return `query_id`, `audit_id`, `检索范围：当前知识库`, `外部来源：未使用`, and clickable approved local evidence. Read [query-retrieval.md](query-retrieval.md) only to diagnose a failed backend; never call an internal retrieval or compliance script as the formal query entry.

@@ -4,16 +4,22 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
 import shutil
-import tempfile
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
+
+from kb_core import (
+    CoreError,
+    atomic_write_json as atomic_json_write,
+    load_json as core_load_json,
+    sha256_bytes,
+    sha256_file,
+)
 
 
 WIKI_LINK = re.compile(r"(?<!\\)(!?)\[\[([^\]]+)\]\]")
@@ -25,18 +31,6 @@ class RepairError(RuntimeError):
     pass
 
 
-def sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def normalized_markdown_sha256(data: bytes) -> str:
     text = data.decode("utf-8-sig")
     normalized = text.replace("\r\n", "\n").replace("\r", "\n")
@@ -45,24 +39,12 @@ def normalized_markdown_sha256(data: bytes) -> str:
 
 def load_object(path: Path) -> dict[str, Any]:
     try:
-        value = json.loads(path.read_text(encoding="utf-8-sig"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise RepairError(f"Invalid JSON: {path}: {exc}") from exc
+        value = core_load_json(path)
+    except CoreError as exc:
+        raise RepairError(str(exc)) from exc
     if not isinstance(value, dict):
         raise RepairError(f"JSON root must be an object: {path}")
     return value
-
-
-def atomic_json_write(path: Path, value: dict[str, Any]) -> None:
-    handle, temp_name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
-    try:
-        with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as stream:
-            json.dump(value, stream, ensure_ascii=False, indent=2)
-            stream.write("\n")
-        os.replace(temp_name, path)
-    except Exception:
-        Path(temp_name).unlink(missing_ok=True)
-        raise
 
 
 def split_target(raw: str) -> tuple[str, str, str]:

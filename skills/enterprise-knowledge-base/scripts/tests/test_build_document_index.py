@@ -1,9 +1,11 @@
 import importlib.util
+import sys
 import tempfile
 import unittest
 from argparse import Namespace
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 SCRIPT = Path(__file__).resolve().parents[1] / "build_document_index.py"
 SPEC = importlib.util.spec_from_file_location("build_document_index", SCRIPT)

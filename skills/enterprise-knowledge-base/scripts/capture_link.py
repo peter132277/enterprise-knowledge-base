@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import html
 import ipaddress
 import json
@@ -23,6 +22,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
+from kb_core import sha256_bytes, sha256_file
+
 
 TRACKING_KEYS = {
     "fbclid",
@@ -38,18 +39,6 @@ MAX_SINGLE_BYTES = 20 * 1024 * 1024
 
 class CaptureError(RuntimeError):
     pass
-
-
-def sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def unwrap_markdown_link(value: str) -> str:

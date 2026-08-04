@@ -3,32 +3,26 @@
 
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
+
+from kb_core import PROJECT_BINDING_SCHEMA, CoreError, canonical_path, load_json
 
 
 class VaultContextError(RuntimeError):
     pass
 
 
-PROJECT_BINDING_SCHEMA = "kb-project-binding/v1"
-
-
 def is_vault(path: Path) -> bool:
     return (path / "AGENTS.md").is_file() and (path / ".kb").is_dir()
-
-
-def canonical_path(path: Path) -> str:
-    return os.path.normcase(str(path.expanduser().resolve()))
 
 
 def validate_project_binding(path: Path) -> Path:
     resolved = path.expanduser().resolve()
     binding_path = resolved / ".kb/config/project-binding.json"
     try:
-        binding = json.loads(binding_path.read_text(encoding="utf-8-sig"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        binding = load_json(binding_path)
+    except CoreError as exc:
         raise VaultContextError(
             f"The current project is not bound to an enterprise knowledge Vault: {resolved}"
         ) from exc

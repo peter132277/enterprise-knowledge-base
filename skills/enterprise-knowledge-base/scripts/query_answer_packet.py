@@ -5,12 +5,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
 from typing import Any
 
 import check_query_compliance as compliance
+import company_sync_coordinator as sync_coordinator
 import query_current_vault as query_engine
 from vault_context import discover_vault
 
@@ -19,6 +21,20 @@ MIN_TOP_SCORE = 20
 SELECTION_RATIO = 0.60
 SEPARATION_RATIO = 0.55
 MAX_AUTO_CITATIONS = 2
+SESSION_ENV_KEYS = ("CODEX_THREAD_ID", "CODEX_SESSION_ID")
+
+
+def resolve_session_id(explicit: str = "") -> str:
+    value = explicit.strip()
+    if value:
+        return value
+    for key in SESSION_ENV_KEYS:
+        value = os.environ.get(key, "").strip()
+        if value:
+            return value
+    raise RuntimeError(
+        "A stable Codex task identifier is required for the all-knowledge query."
+    )
 
 
 def select_high_confidence(
@@ -58,22 +74,30 @@ def compact_result(item: dict[str, Any]) -> dict[str, Any]:
 def run_fast_query(
     vault: Path,
     question: str,
-    scope: str = "auto",
     include_sources: bool = False,
     max_results: int = 8,
     backend: str = "auto",
     enforce_project: bool = True,
+    session_id: str = "",
+    sync_reader: Any | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
+    stable_session_id = resolve_session_id(session_id)
+    sync_result = sync_coordinator.before_knowledge_query(
+        vault,
+        stable_session_id,
+        reader=sync_reader,
+    )
     query_result = query_engine.run_query(
         vault,
         question,
-        scope,
+        "all",
         include_sources,
         max_results,
         backend=backend,
         enforce_project=enforce_project,
         write_receipt=True,
+        sync_credential=sync_result["sync_credential"],
     )
     selected, reason = select_high_confidence(query_result["results"])
     if query_result["results"] and not selected:
@@ -85,6 +109,10 @@ def run_fast_query(
             "query_id": query_result["query_id"],
             "receipt_path": query_result["receipt_path"],
             "retrieval_backend": query_result["retrieval_backend"],
+            "sync": {
+                "status": sync_result["sync"],
+                "remote_reads": sync_result.get("remote_reads"),
+            },
             "results": [
                 compact_result(item) for item in query_result["results"]
             ],
@@ -118,6 +146,10 @@ def run_fast_query(
         "audit_id": audit["audit_id"],
         "audit_path": audit["audit_path"],
         "retrieval_backend": query_result["retrieval_backend"],
+        "sync": {
+            "status": sync_result["sync"],
+            "remote_reads": sync_result.get("remote_reads"),
+        },
         "approved_citations": audit["approved_citations"],
         "external_sources_used": False,
         "answer_contract": audit["answer_contract"],
@@ -133,14 +165,36 @@ def run_fast_query(
     }
 
 
+def run_manual_audit(
+    vault: Path,
+    question: str,
+    receipt: str,
+    cited_paths: list[str],
+    rejected_paths: list[str],
+    no_result: bool,
+    *,
+    enforce_project: bool = True,
+) -> dict[str, Any]:
+    return compliance.run(
+        vault,
+        question,
+        receipt,
+        cited_paths,
+        no_result,
+        persist_audit=True,
+        enforce_project=enforce_project,
+        rejected_paths=rejected_paths,
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--query", required=True)
-    parser.add_argument(
-        "--scope",
-        choices=("auto", "personal", "enterprise", "all"),
-        default="auto",
-    )
+    parser.add_argument("--session-id")
+    parser.add_argument("--receipt")
+    parser.add_argument("--cited-path", action="append", default=[])
+    parser.add_argument("--reject-path", action="append", default=[])
+    parser.add_argument("--no-result", action="store_true")
     parser.add_argument("--include-sources", action="store_true")
     parser.add_argument("--max-results", type=int, default=8)
     parser.add_argument(
@@ -158,15 +212,28 @@ def main() -> int:
         sys.stderr.reconfigure(encoding="utf-8")
     args = build_parser().parse_args()
     try:
-        result = run_fast_query(
-            discover_vault(),
-            args.query,
-            args.scope,
-            args.include_sources,
-            args.max_results,
-            args.backend,
-            enforce_project=True,
-        )
+        vault = discover_vault()
+        if args.receipt:
+            result = run_manual_audit(
+                vault,
+                args.query,
+                args.receipt,
+                args.cited_path,
+                args.reject_path,
+                args.no_result,
+            )
+        else:
+            if args.cited_path or args.reject_path or args.no_result:
+                raise RuntimeError("Manual audit options require --receipt.")
+            result = run_fast_query(
+                vault,
+                args.query,
+                args.include_sources,
+                args.max_results,
+                args.backend,
+                enforce_project=True,
+                session_id=args.session_id or "",
+            )
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     except RuntimeError as exc:

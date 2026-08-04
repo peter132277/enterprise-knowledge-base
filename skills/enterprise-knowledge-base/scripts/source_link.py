@@ -4,13 +4,14 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import re
 import sys
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+
+from kb_core import sha256_bytes
 
 
 SOURCE_HEADING_RE = re.compile(
@@ -28,10 +29,6 @@ TABLE_SEPARATOR_RE = re.compile(r"^\|(?:[ \t]*:?-+:?[ \t]*\|)+$")
 
 class SourceLinkError(RuntimeError):
     pass
-
-
-def sha256_bytes(value: bytes) -> str:
-    return hashlib.sha256(value).hexdigest()
 
 
 def normalize_newlines(value: str) -> str:

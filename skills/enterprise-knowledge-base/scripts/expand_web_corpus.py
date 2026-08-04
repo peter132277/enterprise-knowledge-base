@@ -15,21 +15,17 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from kb_core import (
+    CoreError,
+    atomic_write_json as atomic_json_write,
+    load_json as core_load_json,
+    sha256_bytes,
+    sha256_file,
+)
+
 
 class CorpusError(RuntimeError):
     pass
-
-
-def sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def normalized_markdown_sha256(data: bytes) -> str:
@@ -58,12 +54,10 @@ def normalize_relative(value: str, prefix: str, suffix: str | None = None) -> st
 
 
 def load_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
-    if not path.is_file():
-        return default
     try:
-        value = json.loads(path.read_text(encoding="utf-8-sig"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise CorpusError(f"Invalid JSON state: {path}: {exc}") from exc
+        value = core_load_json(path, default)
+    except CoreError as exc:
+        raise CorpusError(str(exc)) from exc
     if not isinstance(value, dict):
         raise CorpusError(f"JSON state must be an object: {path}")
     return value
@@ -225,19 +219,6 @@ def corpus_item_is_current(vault: Path, item: dict[str, Any]) -> bool:
             ):
                 return False
     return True
-
-
-def atomic_json_write(path: Path, value: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    handle, temp_name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
-    try:
-        with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as stream:
-            json.dump(value, stream, ensure_ascii=False, indent=2)
-            stream.write("\n")
-        os.replace(temp_name, path)
-    except Exception:
-        Path(temp_name).unlink(missing_ok=True)
-        raise
 
 
 def expand(args: argparse.Namespace) -> dict[str, Any]:
