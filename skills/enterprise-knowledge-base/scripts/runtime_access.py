@@ -8,8 +8,20 @@ import json
 from pathlib import Path
 from typing import Any
 
-from membership_policy import canonical_hash, validate_share_scope
-from setup_wizard import COMPANY_SCHEMA, ORG_SCHEMA, load_json, mapping_value, validate_company
+from kb_core import (
+    COMPANY_CONFIG_SCHEMA,
+    ORGANIZATION_SCHEMA,
+    CoreError,
+    load_json,
+    mapping_value,
+    validate_company_config,
+)
+from membership_policy import (
+    MEMBERSHIP_VERIFICATION_SCHEMA,
+    canonical_hash,
+    validate_policy,
+    validate_share_scope,
+)
 from vault_context import discover_vault
 
 
@@ -18,6 +30,18 @@ ACTIONS = {"query", "collect", "publish", "media", "sync"}
 
 class AccessError(RuntimeError):
     pass
+
+
+def validate_company(value: Any) -> dict[str, Any]:
+    try:
+        return validate_company_config(
+            value,
+            validate_policy=validate_policy,
+            validate_share_scope=validate_share_scope,
+            membership_verification_schema=MEMBERSHIP_VERIFICATION_SCHEMA,
+        )
+    except CoreError as exc:
+        raise AccessError(str(exc)) from exc
 
 
 def require_full_company_policy(organization: dict[str, Any]) -> None:
@@ -33,7 +57,7 @@ def authorize(vault: Path, action: str) -> dict[str, Any]:
     if action not in ACTIONS:
         raise AccessError("Unsupported knowledge action.")
     organization = load_json(vault / ".kb/config/organization.json", {})
-    if organization.get("schema") != ORG_SCHEMA:
+    if organization.get("schema") != ORGANIZATION_SCHEMA:
         raise AccessError("Enterprise knowledge setup is incomplete or requires migration.")
     role = organization.get("role")
     if role == "local":
@@ -67,7 +91,7 @@ def authorize(vault: Path, action: str) -> dict[str, Any]:
             raise AccessError(str(exc)) from exc
         access = load_json(vault / ".kb/state/employee-access.json", {})
         if (
-            company.get("schema") != COMPANY_SCHEMA
+            company.get("schema") != COMPANY_CONFIG_SCHEMA
             or company.get("space_mapping_hash") != mapping_hash
             or organization.get("employee_access_verified") is not True
             or access.get("verified") is not True

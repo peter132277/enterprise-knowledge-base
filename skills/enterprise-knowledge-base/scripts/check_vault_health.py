@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import company_sync_coordinator
 
 VISIBLE_DIRS = {"00_收件箱", "10_来源", "20_知识", "30_导航", "90_归档"}
 CONTENT_DIRS = ("10_来源", "20_知识", "30_导航")
@@ -373,6 +374,19 @@ def check_publish_state(vault: Path) -> dict[str, Any]:
     return payload
 
 
+def check_company_sync(vault: Path) -> dict[str, Any]:
+    if not (vault / ".kb/state/company_sync.json").is_file():
+        return {"records": 0, "errors": []}
+    try:
+        state = company_sync_coordinator.validate_local_state(
+            vault,
+            verify_file_hashes=True,
+        )
+    except RuntimeError as exc:
+        return {"records": 0, "errors": [str(exc)]}
+    return {"records": len(state.get("records", {})), "errors": []}
+
+
 def resolve_link(vault: Path, files: list[Path], target: str) -> list[Path]:
     target = target.split("|", 1)[0].split("#", 1)[0].strip()
     if not target:
@@ -496,6 +510,7 @@ def check(vault: Path) -> dict[str, Any]:
     web_corpora = check_web_corpora(vault)
     document_collections = check_document_collections(vault)
     publish_state = check_publish_state(vault)
+    company_sync = check_company_sync(vault)
 
     ok = not any(
         (
@@ -510,6 +525,7 @@ def check(vault: Path) -> dict[str, Any]:
             web_corpora["errors"],
             document_collections["errors"],
             publish_state["errors"],
+            company_sync["errors"],
         )
     )
     return {
@@ -536,6 +552,8 @@ def check(vault: Path) -> dict[str, Any]:
         "publication_published": publish_state.get("published", 0),
         "publication_not_applicable": publish_state.get("not_applicable", 0),
         "publish_state_errors": publish_state["errors"],
+        "company_sync_records": company_sync["records"],
+        "company_sync_errors": company_sync["errors"],
         "web_corpus_count": web_corpora["count"],
         "web_corpus_files": web_corpora["files"],
         "web_corpus_markdown": web_corpora["markdown"],

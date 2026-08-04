@@ -18,13 +18,13 @@ Before confirmation, read only this reference. Do not yet load the detailed `lar
 1. Run the local collection preflight exactly once and lock the source path, name, size, and SHA-256. Immediately start the local timing receipt with the returned hash; it imports that preflight's existing local timing session and makes no remote request:
 
 ```powershell
-python <skill-root>/scripts/media_operation_receipt.py start `
+python <skill-root>/scripts/prepare_media_transcript.py receipt-start `
   --vault . `
   --source-sha256 "<preflight-sha256>" `
   --source-name "<source-file-name>"
 ```
 
-For every later boundary, run `media_operation_receipt.py mark --vault . --receipt <receipt> --stage <stage>` immediately after the existing action. Add `--source-file-url` for `drive_uploaded`, `--minute-url` for `minute_created`, and the three committed path arguments for `local_commit_complete`. Do not call a remote API merely to populate timing data.
+For every later boundary, run `prepare_media_transcript.py receipt-mark --vault . --receipt <receipt> --stage <stage>` immediately after the existing action. Add `--source-file-url` for `drive_uploaded`, `--minute-url` for `minute_created`, and the three committed path arguments for `local_commit_complete`. Do not call a remote API merely to populate timing data.
 2. Read `.kb/mappings/feishu_nodes.json` exactly once. Require a non-empty space name and ID plus at least one verified node. Stop on a missing or ambiguous local mapping. Remote revalidation belongs after confirmation and must use this exact mapping; never inspect another visible space merely because it has a similar name.
 3. Show one transcription preview containing:
    - the exact local file and hash;
@@ -58,7 +58,7 @@ python <skill-root>/scripts/prepare_media_transcript.py feishu-profile `
 12. After a successful verified collection commit, mark `local_commit_complete` with the committed `stored_original`, `extraction`, and `source_note` paths, then finalize:
 
 ```powershell
-python <skill-root>/scripts/media_operation_receipt.py finalize `
+python <skill-root>/scripts/prepare_media_transcript.py receipt-finalize `
   --vault . `
   --receipt ".kb\temp\media-operation-<source-sha256>.json"
 ```

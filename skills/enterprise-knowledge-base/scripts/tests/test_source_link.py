@@ -1,7 +1,9 @@
 import importlib.util
+import sys
 import unittest
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 SCRIPT = Path(__file__).resolve().parents[1] / "source_link.py"
 SPEC = importlib.util.spec_from_file_location("source_link", SCRIPT)

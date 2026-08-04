@@ -1,11 +1,13 @@
 import importlib.util
 import json
+import sys
 import tempfile
 import unittest
 import zipfile
 from argparse import Namespace
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 SCRIPT = Path(__file__).resolve().parents[1] / "expand_web_corpus.py"
 SPEC = importlib.util.spec_from_file_location("expand_web_corpus", SCRIPT)

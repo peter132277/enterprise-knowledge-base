@@ -1,0 +1,27 @@
+name: lightweight-contract
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  simulated-local-contract:
+    strategy:
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install ripgrep on macOS runner
+        if: runner.os == 'macOS'
+        run: brew install ripgrep
+      - name: Install ripgrep on Windows runner
+        if: runner.os == 'Windows'
+        run: choco install ripgrep -y --no-progress
+      - name: Unit and safety gates
+        run: python -m unittest discover -s skills/enterprise-knowledge-base/scripts/tests -p "test_*.py"
+      - name: Same-task 100/1000/5000 benchmark
+        run: python tests/benchmark_query_state.py

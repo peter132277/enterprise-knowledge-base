@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -15,6 +14,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+
+from kb_core import sha256_bytes, sha256_file
 
 
 AUDIO_EXTENSIONS = {".aac", ".amr", ".flac", ".m4a", ".mp3", ".ogg", ".wav", ".wma"}
@@ -29,16 +30,8 @@ class MediaTranscriptError(RuntimeError):
     pass
 
 
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def sha256_text(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return sha256_bytes(text.encode("utf-8"))
 
 
 def media_kind(source: Path) -> str:
@@ -382,19 +375,51 @@ def build_parser() -> argparse.ArgumentParser:
     local.add_argument("--timeout-seconds", type=int, default=21600)
     local.add_argument("--allow-local-execution", action="store_true")
 
+    receipt_start = subparsers.add_parser("receipt-start")
+    receipt_start.add_argument("--vault", default=".")
+    receipt_start.add_argument("--source-sha256", required=True)
+    receipt_start.add_argument("--source-name", required=True)
+
+    receipt_mark = subparsers.add_parser("receipt-mark")
+    receipt_mark.add_argument("--vault", default=".")
+    receipt_mark.add_argument("--receipt", required=True)
+    receipt_mark.add_argument("--stage", required=True)
+    receipt_mark.add_argument("--source-file-url", default="")
+    receipt_mark.add_argument("--minute-url", default="")
+    receipt_mark.add_argument("--stored-original-path", default="")
+    receipt_mark.add_argument("--extraction-path", default="")
+    receipt_mark.add_argument("--source-note-path", default="")
+
+    receipt_finalize = subparsers.add_parser("receipt-finalize")
+    receipt_finalize.add_argument("--vault", default=".")
+    receipt_finalize.add_argument("--receipt", required=True)
+
     return parser
 
 
 def main() -> int:
     args = build_parser().parse_args()
     try:
-        if args.command == "feishu-profile":
+        from runtime_access import authorize
+        from vault_context import discover_vault
+
+        args.vault = str(discover_vault(args.vault))
+        authorize(Path(args.vault), "media")
+        if args.command.startswith("receipt-"):
+            import media_operation_receipt as receipt
+
+            result = {
+                "receipt-start": receipt.start_receipt,
+                "receipt-mark": receipt.mark_stage,
+                "receipt-finalize": receipt.finalize_receipt,
+            }[args.command](args)
+        elif args.command == "feishu-profile":
             result = prepare_feishu(args)
         else:
             result = transcribe_local(args)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
-    except (MediaTranscriptError, OSError, UnicodeError, json.JSONDecodeError) as exc:
+    except (RuntimeError, OSError, UnicodeError, json.JSONDecodeError) as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 1
 

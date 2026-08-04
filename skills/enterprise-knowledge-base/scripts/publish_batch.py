@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import copy
-import hashlib
 import json
 import os
 import re
@@ -15,6 +14,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+
+from kb_core import (
+    CoreError,
+    atomic_write_json,
+    canonical_hash,
+    load_json as core_load_json,
+    sha256_bytes,
+    sha256_file,
+)
 
 
 SCHEMA = "kb-publish-batch/v1"
@@ -28,22 +36,7 @@ class BatchError(RuntimeError):
     pass
 
 
-def sha256_bytes(value: bytes) -> str:
-    return hashlib.sha256(value).hexdigest()
-
-
-def sha256_file(path: Path) -> str:
-    return sha256_bytes(path.read_bytes())
-
-
-def canonical_hash(value: Any) -> str:
-    payload = json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return sha256_bytes(payload)
+_MISSING = object()
 
 
 def within(path: Path, root: Path) -> bool:
@@ -55,6 +48,7 @@ def within(path: Path, root: Path) -> bool:
 
 
 def resolve_in_vault(vault: Path, value: str | Path) -> Path:
+    vault = vault.resolve()
     path = Path(value)
     if not path.is_absolute():
         path = vault / path
@@ -65,33 +59,14 @@ def resolve_in_vault(vault: Path, value: str | Path) -> Path:
 
 
 def relative_posix(path: Path, vault: Path) -> str:
-    return path.relative_to(vault).as_posix()
+    return path.resolve().relative_to(vault.resolve()).as_posix()
 
 
-def load_json(path: Path, default: Any = None) -> Any:
-    if not path.is_file():
-        if default is not None:
-            return copy.deepcopy(default)
-        raise BatchError(f"Missing JSON file: {path}")
+def load_json(path: Path, default: Any = _MISSING) -> Any:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (UnicodeError, json.JSONDecodeError) as exc:
-        raise BatchError(f"Invalid JSON file: {path}") from exc
-
-
-def atomic_write_json(path: Path, value: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    try:
-        temp.write_text(
-            json.dumps(value, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-            newline="\n",
-        )
-        os.replace(temp, path)
-    finally:
-        if temp.exists():
-            temp.unlink()
+        return core_load_json(path) if default is _MISSING else core_load_json(path, default)
+    except CoreError as exc:
+        raise BatchError(str(exc)) from exc
 
 
 def json_bytes(value: Any) -> bytes:

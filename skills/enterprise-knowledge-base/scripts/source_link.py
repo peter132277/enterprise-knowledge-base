@@ -4,13 +4,14 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import re
 import sys
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+
+from kb_core import sha256_bytes
 
 
 SOURCE_HEADING_RE = re.compile(
@@ -30,10 +31,6 @@ class SourceLinkError(RuntimeError):
     pass
 
 
-def sha256_bytes(value: bytes) -> str:
-    return hashlib.sha256(value).hexdigest()
-
-
 def normalize_newlines(value: str) -> str:
     return value.replace("\r\n", "\n").replace("\r", "\n")
 
@@ -47,6 +44,7 @@ def within(path: Path, root: Path) -> bool:
 
 
 def resolve_in_vault(vault: Path, value: str | Path) -> Path:
+    vault = vault.resolve()
     path = Path(value)
     if not path.is_absolute():
         path = vault / path
@@ -298,7 +296,7 @@ def main() -> None:
             print_json(
                 {
                     "ok": True,
-                    "output_relative": output.relative_to(vault).as_posix(),
+                    "output_relative": output.resolve().relative_to(vault.resolve()).as_posix(),
                     "final_payload_hash": sha256_bytes(output.read_bytes()),
                     "source_hash": source_hash,
                     "source_file_url": validate_source_url(args.source_url),

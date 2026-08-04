@@ -12,6 +12,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from kb_core import CoreError, load_json as core_load_json
+
 
 FRONTMATTER = re.compile(r"\A---\s*\n(?P<body>.*?)\n---\s*(?:\n|$)", re.DOTALL)
 
@@ -21,12 +23,10 @@ class StateError(RuntimeError):
 
 
 def load_json(path: Path, default: Any) -> Any:
-    if not path.is_file():
-        return json.loads(json.dumps(default))
     try:
-        return json.loads(path.read_text(encoding="utf-8-sig"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise StateError(f"Invalid JSON file: {path}") from exc
+        return core_load_json(path, default)
+    except CoreError as exc:
+        raise StateError(str(exc)) from exc
 
 
 def json_bytes(value: Any) -> bytes:

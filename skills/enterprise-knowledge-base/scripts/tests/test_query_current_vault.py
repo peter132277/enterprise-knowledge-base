@@ -32,16 +32,17 @@ FAST_SPEC = importlib.util.spec_from_file_location(
 FAST = importlib.util.module_from_spec(FAST_SPEC)
 assert FAST_SPEC.loader
 FAST_SPEC.loader.exec_module(FAST)
+import setup_wizard as SETUP
 
 
 class QueryCurrentVaultTests(unittest.TestCase):
     def make_vault(self, root: Path) -> None:
-        (root / "20_知识/个人").mkdir(parents=True)
-        (root / "20_知识/企业").mkdir(parents=True)
-        (root / "20_知识/原子").mkdir(parents=True)
-        (root / "30_导航/主题/个人主题").mkdir(parents=True)
-        (root / "30_导航/主题/企业主题").mkdir(parents=True)
-        (root / "10_来源/提取").mkdir(parents=True)
+        (root / "20_知识/个人").mkdir(parents=True, exist_ok=True)
+        (root / "20_知识/企业").mkdir(parents=True, exist_ok=True)
+        (root / "20_知识/原子").mkdir(parents=True, exist_ok=True)
+        (root / "30_导航/主题/个人主题").mkdir(parents=True, exist_ok=True)
+        (root / "30_导航/主题/企业主题").mkdir(parents=True, exist_ok=True)
+        (root / "10_来源/提取").mkdir(parents=True, exist_ok=True)
         (root / "20_知识/个人/个人方法.md").write_text(
             "# 个人方法\n\n番茄工作法与复盘。\n", encoding="utf-8"
         )
@@ -81,11 +82,11 @@ class QueryCurrentVaultTests(unittest.TestCase):
                 8,
                 enforce_project=False,
             )
-            self.assertEqual(enterprise["scope"], "enterprise")
-            self.assertEqual(enterprise["result_count"], 1)
-            self.assertEqual(
-                enterprise["results"][0]["path"],
+            self.assertEqual(enterprise["scope"], "all")
+            enterprise_paths = {item["path"] for item in enterprise["results"]}
+            self.assertIn(
                 "20_知识/企业/销售方法.md",
+                enterprise_paths,
             )
             without_sources = QUERY.run_query(
                 vault,
@@ -157,7 +158,7 @@ class QueryCurrentVaultTests(unittest.TestCase):
                     vault,
                     "企业知识销售",
                     result["receipt_path"],
-                    ["20_知识/个人/个人方法.md"],
+                    ["20_知识/企业/不存在.md"],
                     False,
                     persist_audit=False,
                     enforce_project=False,
@@ -166,8 +167,9 @@ class QueryCurrentVaultTests(unittest.TestCase):
     def test_fast_path_audits_clear_ranking_in_one_call(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             vault = Path(folder)
+            SETUP.initialize(vault, "local", "")
             self.make_vault(vault)
-            target = next(vault.rglob("*.md")).parent / "fast-path.md"
+            target = vault / "20_知识/个人/fast-path.md"
             target.write_text(
                 "# clear-fast-path-only\n\n"
                 "clear-fast-path-only clear-fast-path-only clear-fast-path-only\n",
@@ -176,9 +178,9 @@ class QueryCurrentVaultTests(unittest.TestCase):
             result = FAST.run_fast_query(
                 vault,
                 "clear-fast-path-only",
-                scope="all",
                 backend="rg",
                 enforce_project=False,
+                session_id="fast-path-task",
             )
             self.assertEqual(result["status"], "audited-fast-path")
             self.assertEqual(len(result["approved_citations"]), 1)
@@ -200,13 +202,14 @@ class QueryCurrentVaultTests(unittest.TestCase):
     def test_fast_path_audits_zero_result_without_broadening(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             vault = Path(folder)
+            SETUP.initialize(vault, "local", "")
             self.make_vault(vault)
             result = FAST.run_fast_query(
                 vault,
                 "definitely-absent-evidence-marker",
-                scope="all",
                 backend="rg",
                 enforce_project=False,
+                session_id="zero-result-task",
             )
             self.assertEqual(result["status"], "audited-no-result")
             self.assertEqual(result["approved_citations"], [])
@@ -251,7 +254,7 @@ class QueryCurrentVaultTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             vault = Path(folder)
             self.make_vault(vault)
-            target = next(vault.rglob("*.md")).parent / "candidate.md"
+            target = vault / "20_知识/个人/candidate.md"
             target.write_text(
                 "# generic-candidate\n\ngeneric-candidate\n",
                 encoding="utf-8",
@@ -392,7 +395,14 @@ class QueryCurrentVaultTests(unittest.TestCase):
             shutil.copy2(SCRIPT, scripts / SCRIPT.name)
             shutil.copy2(AUDIT_SCRIPT, scripts / AUDIT_SCRIPT.name)
             shutil.copy2(FAST_SCRIPT, scripts / FAST_SCRIPT.name)
-            shutil.copy2(SCRIPT.parent / "vault_context.py", scripts / "vault_context.py")
+            for name in (
+                "vault_context.py",
+                "kb_core.py",
+                "membership_policy.py",
+                "runtime_access.py",
+                "company_sync_coordinator.py",
+            ):
+                shutil.copy2(SCRIPT.parent / name, scripts / name)
             self.make_vault(vault)
             (vault / ".kb").mkdir(parents=True)
             (vault / "AGENTS.md").write_text("# rules\n", encoding="utf-8")
@@ -407,6 +417,10 @@ class QueryCurrentVaultTests(unittest.TestCase):
                         "vault_root": bound_root,
                     }
                 ),
+                encoding="utf-8",
+            )
+            (vault / ".kb/config/organization.json").write_text(
+                json.dumps({"schema": "kb-organization/v3", "role": "local"}),
                 encoding="utf-8",
             )
             (vault / "20_知识/个人/个人方法.md").write_text(
@@ -424,8 +438,6 @@ class QueryCurrentVaultTests(unittest.TestCase):
                     str(scripts / SCRIPT.name),
                     "--query",
                     "portable-marker-only",
-                    "--scope",
-                    "personal",
                     "--backend",
                     "rg",
                 ],
@@ -472,8 +484,8 @@ class QueryCurrentVaultTests(unittest.TestCase):
                     str(scripts / FAST_SCRIPT.name),
                     "--query",
                     "portable-marker-only",
-                    "--scope",
-                    "personal",
+                    "--session-id",
+                    "portable-task",
                     "--backend",
                     "rg",
                 ],

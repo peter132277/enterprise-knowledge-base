@@ -13,8 +13,8 @@ Choose one physical mode before semantic extraction:
 
 For a `standalone-collection`, verify the complete extraction before creating navigation.
 
-- If it has at most 100,000 characters and at most 100 stable items, use `scripts/build_document_index.py`.
-- If it exceeds either threshold, use `scripts/split_document_collection.py`.
+- If it has at most 100,000 characters and at most 100 stable items, the public `ingest_pipeline.py` entry uses its internal document-index component.
+- If it exceeds either threshold, the same entry uses its internal collection splitter.
 - Preserve the full canonical extraction under `.kb/evidence/document-collections/<source-sha256>/`.
 - Keep the processed-state extraction path as a lightweight landing page.
 - Create active volumes of at most 50 native items under `10_来源/提取`.

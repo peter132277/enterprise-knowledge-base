@@ -1,11 +1,13 @@
 import argparse
 import importlib.util
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 SCRIPT = Path(__file__).resolve().parents[1] / "media_operation_receipt.py"
 SPEC = importlib.util.spec_from_file_location("media_operation_receipt", SCRIPT)
