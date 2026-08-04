@@ -12,7 +12,8 @@ import sys
 from pathlib import Path, PureWindowsPath
 from typing import Any, Callable
 
-from query_current_vault import PROJECT_VAULT, find_obsidian_cli
+from query_current_vault import find_obsidian_cli
+from vault_context import discover_vault
 
 
 PATH_KEYS = {
@@ -283,7 +284,7 @@ def main() -> int:
     args = parser.parse_args()
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
-    result = run_checks(PROJECT_VAULT, args.mode)
+    result = run_checks(discover_vault(), args.mode)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if result["ok"] else 2
 

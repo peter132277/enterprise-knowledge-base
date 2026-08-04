@@ -64,6 +64,15 @@ class QueryCurrentVaultTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             vault = Path(folder)
             self.make_vault(vault)
+            direct = QUERY.run_query(
+                vault,
+                "销售流程是什么？",
+                "auto",
+                False,
+                8,
+                enforce_project=False,
+            )
+            self.assertEqual(direct["scope"], "all")
             enterprise = QUERY.run_query(
                 vault,
                 "企业知识销售",
@@ -387,6 +396,19 @@ class QueryCurrentVaultTests(unittest.TestCase):
             self.make_vault(vault)
             (vault / ".kb").mkdir(parents=True)
             (vault / "AGENTS.md").write_text("# rules\n", encoding="utf-8")
+            (vault / ".kb/config").mkdir(parents=True)
+            bound_root = os.path.normcase(str(vault.resolve()))
+            (vault / ".kb/config/project-binding.json").write_text(
+                json.dumps(
+                    {
+                        "schema": "kb-project-binding/v1",
+                        "binding_mode": "same-root",
+                        "project_root": bound_root,
+                        "vault_root": bound_root,
+                    }
+                ),
+                encoding="utf-8",
+            )
             (vault / "20_知识/个人/个人方法.md").write_text(
                 "# portable-marker-only\n\n"
                 "portable-marker-only portable-marker-only portable-marker-only\n",
@@ -407,7 +429,7 @@ class QueryCurrentVaultTests(unittest.TestCase):
                     "--backend",
                     "rg",
                 ],
-                cwd=root,
+                cwd=vault,
                 env=environment,
                 capture_output=True,
                 text=True,
@@ -432,7 +454,7 @@ class QueryCurrentVaultTests(unittest.TestCase):
                     "--cited-path",
                     result["results"][0]["path"],
                 ],
-                cwd=root,
+                cwd=vault,
                 env=environment,
                 capture_output=True,
                 text=True,
@@ -455,7 +477,7 @@ class QueryCurrentVaultTests(unittest.TestCase):
                     "--backend",
                     "rg",
                 ],
-                cwd=root,
+                cwd=vault,
                 env=environment,
                 capture_output=True,
                 text=True,

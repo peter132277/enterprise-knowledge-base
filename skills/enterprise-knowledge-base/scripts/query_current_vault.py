@@ -22,7 +22,6 @@ from typing import Any
 from vault_context import discover_vault
 
 
-PROJECT_VAULT = discover_vault()
 MARKDOWN_EXTENSIONS = {".md", ".markdown"}
 FRONTMATTER_TITLE = re.compile(r"^title:\s*[\"']?(.*?)[\"']?\s*$", re.MULTILINE)
 H1 = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
@@ -642,8 +641,11 @@ def run_query(
 ) -> dict[str, Any]:
     query_started = time.perf_counter()
     resolved_vault = vault.resolve()
-    if enforce_project and resolved_vault != PROJECT_VAULT.resolve():
-        raise QueryError(f"Retrieval is restricted to {PROJECT_VAULT}")
+    if enforce_project:
+        try:
+            resolved_vault = discover_vault(resolved_vault)
+        except RuntimeError as exc:
+            raise QueryError(str(exc)) from exc
     if not query.strip():
         raise QueryError("Query must not be empty")
     if max_results < 1 or max_results > 20:
@@ -659,7 +661,7 @@ def run_query(
         roots,
         recall,
         backend,
-        allow_cli=resolved_vault == PROJECT_VAULT.resolve(),
+        allow_cli=enforce_project,
     )
     retrieval_duration_ms = (time.perf_counter() - retrieval_started) * 1000
     scoring_started = time.perf_counter()
@@ -758,8 +760,9 @@ def main() -> int:
         sys.stderr.reconfigure(encoding="utf-8")
     args = build_parser().parse_args()
     try:
+        project_vault = discover_vault()
         result = run_query(
-            PROJECT_VAULT,
+            project_vault,
             args.query,
             args.scope,
             args.include_sources,
@@ -769,7 +772,7 @@ def main() -> int:
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
-    except QueryError as exc:
+    except RuntimeError as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
         return 2
 

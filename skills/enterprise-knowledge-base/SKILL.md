@@ -9,7 +9,7 @@ Use this Skill as the only visible and implicit entry for the configured knowled
 
 ## Start or resume setup
 
-For `开始安装企业知识库`, `继续安装`, missing Vault configuration, or an environment failure, read [setup-workflow.md](references/setup-workflow.md). Present only the current human choice or action. Do not show commands, JSON, hashes, IDs, secrets, or internal stages.
+For `开始安装企业知识库`, `继续安装`, missing Vault configuration, or an environment failure, read [setup-workflow.md](references/setup-workflow.md). Bind the current Codex project as the only Vault, install the verified Claudian dependency and configure its local Codex CLI path when the user chooses automatic setup. Present only the current human choice or action. Do not show commands, JSON, hashes, IDs, secrets, or internal stages.
 
 The first role choice must be exactly:
 
@@ -28,7 +28,7 @@ Configure exactly `全公司内部员工` with `查询、收录并发布`. Do no
 Before every normal query, collection, media, sync, preview, confirmation, retry, or publication action, read and follow [runtime-access.md](references/runtime-access.md). Setup inspection and local health diagnostics are the only exceptions.
 
 - Attachment-only message: treat it as a complete collection request. Route audio and video through [media-transcription.md](references/media-transcription.md); route every other attachment through the local collection workflow below.
-- Factual, explanatory, comparative, summary, recommendation, or lookup question: authorize `query`, refresh the read-only company mirror, then follow [query-workflow.md](references/query-workflow.md). Answer only after the current-Vault query receipt and citation audit pass.
+- Factual, explanatory, comparative, summary, recommendation, or lookup question: authorize `query`, refresh the read-only company mirror, then follow [query-workflow.md](references/query-workflow.md). An ordinary direct question searches both local personal and enterprise knowledge (`scope: all`) without requiring a command prefix. Answer only after the current-Vault query receipt and citation audit pass.
 - File, local path, public link, `收录`, `整理`, `处理`, or saved text: read [capture-modes.md](references/capture-modes.md), then [adaptive-processing.md](references/adaptive-processing.md) only when the source requires it. Never contact Feishu from the collection route.
 - Clear publication intent such as `批量发布`, `发布飞书`, or `发布到飞书`: create the read-only immutable preview immediately using the publication scripts. Ask once for `确认批量发布`.
 - `确认批量发布` or exact-batch recovery: follow the publication contract below. Never extend that authorization to another batch, space, upload, deletion, or permission change.
@@ -78,4 +78,4 @@ Read [destination-rules.md](references/destination-rules.md) only for an unresol
 
 ## Discover the Vault safely
 
-Resolve the Vault from an explicit path, `KB_VAULT_ROOT`, or the nearest current-directory ancestor containing both `AGENTS.md` and `.kb`. Never derive the data Vault from the globally installed plugin path. Fail closed when no unique configured Vault is available.
+Resolve the Vault only as the nearest current-directory ancestor containing `AGENTS.md`, `.kb`, and a valid same-root `.kb/config/project-binding.json`. A supplied path or `KB_VAULT_ROOT` is valid only when it equals that bound current project; it may never redirect access elsewhere. Never derive the data Vault from the globally installed plugin path. Fail closed when the binding is absent, moved, contradictory, or outside the active project.

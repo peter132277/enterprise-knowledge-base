@@ -84,6 +84,10 @@ class SetupWizardTests(unittest.TestCase):
             result = setup.initialize(vault, "local", "Example")
             self.assertTrue(result["configured"])
             self.assertTrue((vault / "AGENTS.md").is_file())
+            binding = setup.load_json(vault / ".kb/config/project-binding.json")
+            self.assertEqual(binding["binding_mode"], "same-root")
+            self.assertEqual(binding["project_root"], setup.canonical_path(vault))
+            self.assertEqual(binding["vault_root"], setup.canonical_path(vault))
             for relative in (*setup.VISIBLE_DIRECTORIES, *setup.SYSTEM_DIRECTORIES):
                 self.assertTrue((vault / relative).is_dir(), relative)
 
@@ -221,10 +225,206 @@ class SetupWizardTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(run.call_args.args[0], ["brew", "install", "--cask", "obsidian"])
 
+    def test_claudian_is_installed_enabled_and_bound_to_codex_cli(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            vault = Path(folder) / "vault"
+            codex = Path(folder) / "codex.exe"
+            codex.write_bytes(b"codex")
+            setup.initialize(vault, "local", "Example")
+            assets = {
+                "main.js": b"main",
+                "manifest.json": json.dumps(
+                    {
+                        "id": setup.CLAUDIAN_PLUGIN_ID,
+                        "name": "Claudian",
+                        "version": setup.CLAUDIAN_VERSION,
+                    }
+                ).encode("utf-8"),
+                "styles.css": b"styles",
+            }
+            with patch.object(
+                setup, "download_claudian_asset", side_effect=lambda name: assets[name]
+            ), patch.object(
+                setup,
+                "sha256_file",
+                side_effect=lambda path: setup.CLAUDIAN_ASSETS[path.name],
+            ), patch.object(
+                setup.platform, "system", return_value="Windows"
+            ), patch.object(
+                setup.platform, "node", return_value="workstation"
+            ):
+                result = setup.install_claudian(vault, True, str(codex))
+            self.assertTrue(result["installed"])
+            plugin = vault / f".obsidian/plugins/{setup.CLAUDIAN_PLUGIN_ID}"
+            self.assertTrue((plugin / "main.js").is_file())
+            self.assertIn(
+                setup.CLAUDIAN_PLUGIN_ID,
+                setup.load_json(vault / ".obsidian/community-plugins.json"),
+            )
+            settings = setup.load_json(vault / ".claudian/claudian-settings.json")
+            codex_settings = settings["providerConfigs"]["codex"]
+            self.assertTrue(codex_settings["enabled"])
+            self.assertEqual(
+                codex_settings["cliPathsByHost"]["workstation"], str(codex.resolve())
+            )
+            integration = setup.load_json(
+                vault / ".kb/config/obsidian-integration.json"
+            )
+            self.assertEqual(integration["project_root"], setup.canonical_path(vault))
+            self.assertEqual(integration["vault_root"], setup.canonical_path(vault))
+
+    def test_existing_claudian_is_reused_without_download_or_overwrite(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            vault = Path(folder) / "vault"
+            codex = Path(folder) / "codex.exe"
+            codex.write_bytes(b"codex")
+            setup.initialize(vault, "local", "Example")
+            plugin = vault / f".obsidian/plugins/{setup.CLAUDIAN_PLUGIN_ID}"
+            plugin.mkdir(parents=True)
+            original = {
+                "main.js": b"existing-main",
+                "manifest.json": json.dumps(
+                    {
+                        "id": setup.CLAUDIAN_PLUGIN_ID,
+                        "name": "Claudian",
+                        "version": setup.CLAUDIAN_VERSION,
+                    }
+                ).encode("utf-8"),
+                "styles.css": b"existing-styles",
+            }
+            for name, data in original.items():
+                (plugin / name).write_bytes(data)
+            existing_settings = {
+                "unrelatedSetting": {"preserve": True},
+                "providerConfigs": {"codex": {"safeMode": "read-only"}},
+            }
+            setup.atomic_write_json(
+                vault / ".claudian/claudian-settings.json", existing_settings
+            )
+            with patch.object(
+                setup, "download_claudian_asset"
+            ) as download, patch.object(
+                setup.platform, "system", return_value="Windows"
+            ), patch.object(
+                setup.platform, "node", return_value="configured-workstation"
+            ):
+                result = setup.install_claudian(vault, True, str(codex))
+            download.assert_not_called()
+            self.assertTrue(result["already_installed"])
+            self.assertFalse(result["installed"])
+            for name, data in original.items():
+                self.assertEqual((plugin / name).read_bytes(), data)
+            settings = setup.load_json(vault / ".claudian/claudian-settings.json")
+            self.assertEqual(settings["unrelatedSetting"], {"preserve": True})
+            self.assertEqual(
+                settings["providerConfigs"]["codex"]["cliPathsByHost"][
+                    "configured-workstation"
+                ],
+                str(codex.resolve()),
+            )
+
+    def test_inspect_reports_existing_claudian_ready_without_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            vault = Path(folder) / "vault"
+            codex = Path(folder) / "codex"
+            codex.write_bytes(b"codex")
+            setup.initialize(vault, "local", "Example")
+            plugin = vault / f".obsidian/plugins/{setup.CLAUDIAN_PLUGIN_ID}"
+            plugin.mkdir(parents=True)
+            (plugin / "main.js").write_bytes(b"existing-main")
+            (plugin / "styles.css").write_bytes(b"existing-styles")
+            setup.atomic_write_json(
+                plugin / "manifest.json",
+                {
+                    "id": setup.CLAUDIAN_PLUGIN_ID,
+                    "name": "Claudian",
+                    "version": setup.CLAUDIAN_VERSION,
+                },
+            )
+            setup.atomic_write_json(
+                vault / ".obsidian/community-plugins.json",
+                [setup.CLAUDIAN_PLUGIN_ID],
+            )
+            setup.atomic_write_json(
+                vault / ".claudian/claudian-settings.json",
+                {
+                    "providerConfigs": {
+                        "codex": {
+                            "enabled": True,
+                            "cliPathsByHost": {"existing-device": str(codex.resolve())},
+                        }
+                    }
+                },
+            )
+            before = {
+                path.relative_to(vault).as_posix(): path.read_bytes()
+                for path in vault.rglob("*")
+                if path.is_file()
+            }
+            result = setup.inspect(vault)
+            after = {
+                path.relative_to(vault).as_posix(): path.read_bytes()
+                for path in vault.rglob("*")
+                if path.is_file()
+            }
+            self.assertTrue(result["claudian"]["ready"])
+            self.assertEqual(result["claudian"]["codex_cli_path"], str(codex.resolve()))
+            self.assertEqual(before, after)
+
+    def test_macos_claudian_config_uses_verified_codex_path(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            vault = Path(folder) / "vault"
+            codex = Path(folder) / "codex"
+            codex.write_bytes(b"codex")
+            setup.initialize(vault, "local", "Example")
+            plugin = vault / f".obsidian/plugins/{setup.CLAUDIAN_PLUGIN_ID}"
+            plugin.mkdir(parents=True)
+            for name, data in {
+                "main.js": b"existing-main",
+                "manifest.json": json.dumps(
+                    {
+                        "id": setup.CLAUDIAN_PLUGIN_ID,
+                        "name": "Claudian",
+                        "version": setup.CLAUDIAN_VERSION,
+                    }
+                ).encode("utf-8"),
+                "styles.css": b"existing-styles",
+            }.items():
+                (plugin / name).write_bytes(data)
+            with patch.object(
+                setup.platform, "system", return_value="Darwin"
+            ), patch.object(
+                setup.platform, "node", return_value="mac-workstation"
+            ), patch.object(setup, "download_claudian_asset") as download:
+                result = setup.install_claudian(vault, True, str(codex))
+            download.assert_not_called()
+            self.assertTrue(result["already_installed"])
+            settings = setup.load_json(vault / ".claudian/claudian-settings.json")
+            codex_settings = settings["providerConfigs"]["codex"]
+            self.assertEqual(
+                codex_settings["cliPathsByHost"]["mac-workstation"],
+                str(codex.resolve()),
+            )
+            self.assertNotIn("installationMethodsByHost", codex_settings)
+
+    def test_project_binding_rejects_a_different_vault_root(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            vault = Path(folder) / "vault"
+            other = Path(folder) / "other"
+            setup.initialize(vault, "local", "Example")
+            with self.assertRaises(setup.SetupError):
+                setup.bind_project(vault, other)
+
     def test_installers_never_run_without_confirmation(self) -> None:
-        with patch.object(setup.shutil, "which", return_value=None):
+        with tempfile.TemporaryDirectory() as folder, patch.object(
+            setup.shutil, "which", return_value=None
+        ):
+            vault = Path(folder) / "vault"
+            setup.initialize(vault, "local", "Example")
             with self.assertRaises(setup.SetupError):
                 setup.install_obsidian(False)
+            with self.assertRaises(setup.SetupError):
+                setup.install_claudian(vault, False)
             with self.assertRaises(setup.SetupError):
                 setup.install_lark_cli(False)
 

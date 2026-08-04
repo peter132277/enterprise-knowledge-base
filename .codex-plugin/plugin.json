@@ -1,6 +1,6 @@
 {
   "name": "enterprise-knowledge-base",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "One-entry local and Feishu enterprise knowledge workflow with guided setup.",
   "author": {
     "name": "Enterprise Knowledge Base Team"
