@@ -10,24 +10,13 @@
 
 ## 一键安装
 
-将下面整段文字复制到 Codex 桌面版对话框发送即可。无需在终端执行 CLI 命令。
+将下面一句话复制到 Codex 桌面版对话框发送即可。无需在终端执行 CLI 命令。
 
 ```text
-请从 GitHub 仓库 https://github.com/peter132277/enterprise-knowledge-base 安装最新版“企业知识库”插件。
-
-要求：
-1. 使用仓库中经过校验的单插件分发内容，只安装 enterprise-knowledge-base，不要把内部能力拆成多个独立 Skill。
-2. 安装前检查插件清单、版本、单 Skill 结构和 README 中的安全边界；不要安装测试目录、缓存、数据库或后台服务。
-3. Windows 和 macOS 都使用当前系统支持的本地插件安装方式。需要安装 Obsidian、Node.js 或飞书配置工具时，先给我可读选项并等待确认。
-4. 安装成功后不要要求重启 Codex，也不要要求新建对话。立即读取刚安装的 enterprise-knowledge-base/SKILL.md，并在当前对话直接进入首次配置流程。
-5. 首次配置只显示以下三个选项：
-   - 我是飞书管理员，首次为公司部署
-   - 我是普通员工，加入公司已有知识库
-   - 暂时只使用本地知识库
-6. 不执行测试上传、Wiki 发布、成员变更、空间创建或权限修改，除非我针对对应远端操作另行明确确认。
+请按照 https://github.com/peter132277/enterprise-knowledge-base/blob/main/INSTALL_REQUIREMENTS.md 的要求安装最新版“企业知识库”插件，安装后直接进入配置流程。
 ```
 
-安装代理可以在当前对话直接读取新安装的 Skill 并继续配置，因此不需要为首次配置重启 Codex。插件在界面列表中的刷新不影响当前配置流程。
+详细的安装、校验、安全和首次配置要求见 [INSTALL_REQUIREMENTS.md](INSTALL_REQUIREMENTS.md)。
 
 ## 基本功能
 
@@ -125,7 +114,7 @@
 
 ## 安装与使用说明
 
-更简短的逐步说明见 [INSTALL.md](INSTALL.md)。公司配置包结构和管理员／员工边界由插件内的确定性校验器强制执行。
+面向用户的逐步说明见 [INSTALL.md](INSTALL.md)，安装代理必须遵循 [INSTALL_REQUIREMENTS.md](INSTALL_REQUIREMENTS.md)。公司配置包结构和管理员／员工边界由插件内的确定性校验器强制执行。
 
 ## 当前版本
 

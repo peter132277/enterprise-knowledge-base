@@ -1,5 +1,7 @@
 # 企业知识库安装指引
 
+安装代理必须先读取并遵循 [INSTALL_REQUIREMENTS.md](INSTALL_REQUIREMENTS.md)。本页只保留面向用户的配置步骤。
+
 ## 安装插件
 
 1. 在 Codex 的插件安装界面选择本插件安装包。

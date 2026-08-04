@@ -122,11 +122,26 @@ class SkillRoutingTopologyTests(unittest.TestCase):
         self.assertTrue((SKILL_ROOT / "scripts/sync_company_knowledge.py").is_file())
         self.assertTrue((SKILL_ROOT / "scripts/feishu_company_adapter.py").is_file())
         self.assertTrue((PLUGIN_ROOT / "INSTALL.md").is_file())
+        self.assertTrue((PLUGIN_ROOT / "INSTALL_REQUIREMENTS.md").is_file())
         readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn("复制到 Codex 桌面版对话框", readme)
-        self.assertIn("不要要求重启 Codex", readme)
-        self.assertIn("立即读取刚安装的 enterprise-knowledge-base/SKILL.md", readme)
+        requirements = (PLUGIN_ROOT / "INSTALL_REQUIREMENTS.md").read_text(
+            encoding="utf-8"
+        )
+        prompt_match = re.search(r"```text\n([^`]+)\n```", readme)
+        self.assertIsNotNone(prompt_match)
+        prompt = prompt_match.group(1).strip()
+        self.assertEqual(len(prompt.splitlines()), 1)
+        self.assertIn("INSTALL_REQUIREMENTS.md", prompt)
+        self.assertIn("安装后直接进入配置流程", prompt)
+        self.assertNotIn("要求：", prompt)
+        self.assertIn("不得要求重启 Codex", requirements)
+        self.assertIn(
+            "立即读取新安装的 `enterprise-knowledge-base/SKILL.md`", requirements
+        )
+        self.assertIn("我是飞书管理员，首次为公司部署", requirements)
+        self.assertIn("尚未获得单独授权的真实飞书写入保持为零", requirements)
         self.assertNotIn("codex plugin add", readme)
+        self.assertNotIn("codex plugin add", requirements)
         self.assertIn(
             "company-config-schema.md", read("references/setup-workflow.md")
         )
