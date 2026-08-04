@@ -4,13 +4,11 @@ Keep setup conversational. Show one decision at a time and never ask a novice to
 
 ## 1. Inspect before changing anything
 
-Run `setup_wizard.py inspect --vault <candidate-path>`. If the current workspace is already a configured Vault, offer to use it. Otherwise show:
+Resolve the current Codex project root and run `setup_wizard.py inspect --vault <current-project-root>`. The current Codex project is the only allowed Vault candidate. Show:
 
 - `使用当前 Codex 项目`
-- `在“文档”目录创建企业知识库`
-- `选择已有文件夹`
 
-If Codex cannot register a newly created folder as a saved project, create and verify the folder first, then ask for the single UI action `在 Codex 中打开此文件夹`. Resume setup in the new task.
+Do not create a Vault elsewhere, accept an external Vault path, or use `KB_VAULT_ROOT` to redirect runtime access. If the current project is an unrelated non-empty directory, stop and ask for the single Codex UI action `打开要作为知识库的文件夹`; do not claim that Codex saved-project registration was automatic. Resume only after that folder is the active Codex project.
 
 ## 2. Select the role
 
@@ -20,9 +18,11 @@ Show exactly:
 - `我是普通员工，加入公司已有知识库`
 - `暂时只使用本地知识库`
 
-Initialize only after the user selects a role. Use `setup_wizard.py initialize` and preserve an existing compatible Vault. Never overwrite an unrelated non-empty directory.
+Initialize only after the user selects a role. Use `setup_wizard.py initialize`; it writes a same-root project binding under `.kb/config/project-binding.json`. Preserve an existing compatible Vault and never overwrite an unrelated non-empty directory. Every runtime route must resolve the nearest bound current project and reject a different explicit path or environment override.
 
-## 3. Install Obsidian
+## 3. Reuse the configured desktop or complete new-machine setup
+
+Treat Obsidian, Claudian, and the Claudian Codex provider as one new-machine setup capability. Inspect them read-only first. When `inspect` reports the existing Claudian integration as ready, reuse it and do not show an installation choice, download assets, rewrite its settings, or reinstall anything.
 
 If Obsidian is absent, show:
 
@@ -31,7 +31,9 @@ If Obsidian is absent, show:
 
 Software installation requires the user's explicit selection. Run `setup_wizard.py install-obsidian --yes` only after `自动安装并打开`. On Windows prefer the verified Winget package `Obsidian.Obsidian`. On macOS prefer an existing Obsidian app, then Homebrew cask `obsidian` when Homebrew is already available. If the platform package manager is unavailable, open the official download page in the in-app browser. Do not install Homebrew as a hidden prerequisite.
 
-After installation, run `setup_wizard.py open-obsidian --vault <vault>`. The Codex project root and Obsidian Vault root must be identical.
+On a new or incomplete machine, the same `自动安装并打开` selection also authorizes the required local Claudian setup. Run `setup_wizard.py install-claudian --vault <current-project-root> --yes`. Reuse an existing compatible `YishenTu/claudian` installation first; install the pinned SHA-256-verified release only when absent. The required plugin ID is `realclaudian`. Enable it in `.obsidian/community-plugins.json`, detect the real local Codex CLI executable, and preserve or update only the Codex provider path in `.claudian/claudian-settings.json`. Do not install a similarly named plugin, accept a hash mismatch, overwrite unrelated plugin files, or report success when the Codex CLI cannot be found.
+
+Then run `setup_wizard.py open-obsidian --vault <current-project-root>`. The command must reject a missing or mismatched project binding. The Obsidian URI opens the already-bound Codex project as its Vault; it does not register a separate Codex project.
 
 ## 4. Configure Feishu as an administrator
 
@@ -82,7 +84,7 @@ After every employee verification passes, `setup_wizard.py verify-employee` perf
 
 ## 6. Local-only mode
 
-Create and validate the Vault and Obsidian configuration without installing lark-cli or creating Feishu mappings. Keep media on the explicit offline path and keep publication unavailable until an administrator configures Feishu later.
+Create and validate the bound Vault, Obsidian, Claudian, and Codex CLI path without installing lark-cli or creating Feishu mappings. Keep media on the explicit offline path and keep publication unavailable until an administrator configures Feishu later.
 
 ## 7. Finish
 
@@ -90,6 +92,9 @@ Run environment, Vault-health, and publication-state checks appropriate to the e
 
 - Codex project location
 - Obsidian Vault location
+- project/Vault binding status
+- Claudian plugin version and enabled status
+- verified Codex CLI path used by Claudian
 - local knowledge readiness
 - Feishu identity and space readiness, when enabled
 - effective employee publication policy

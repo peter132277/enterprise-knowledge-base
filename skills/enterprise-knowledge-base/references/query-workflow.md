@@ -2,7 +2,7 @@
 
 Use only for a factual, explanatory, comparative, summary, recommendation, or lookup request. Search only this Vault; never use another workspace, backup, public web, connected drive, or model memory. The only Feishu access allowed here is the managed read-only company mirror refresh before an enterprise query.
 
-Before retrieval, run the `query` access gate. For `personal`, do not contact Feishu. For `enterprise` or `all`, run exactly one session coordinator check using a stable identifier for the current Codex task:
+Before retrieval, run the `query` access gate. An ordinary direct question uses `all` and searches both local personal and enterprise knowledge without a command prefix. For `personal`, do not contact Feishu. For `enterprise` or `all`, run exactly one session coordinator check using a stable identifier for the current Codex task:
 
 ```text
 python <skill-root>/scripts/company_sync_coordinator.py before-query --vault <current-vault> --scope <personal|enterprise|all> --session-id <current-task-id>
@@ -15,10 +15,10 @@ Run the one-command fast path first:
 ```powershell
 python <skill-root>/scripts/query_answer_packet.py `
   --query "<exact user question>" `
-  --scope auto
+  --scope all
 ```
 
-Use `--scope personal` or `enterprise` when explicit and `all` only when both are explicit. Add `--include-sources` only for complete wording or provenance. Never replace the managed script with direct Obsidian CLI or `rg`.
+Keep `--scope all` for an ordinary direct question so personal and enterprise knowledge are searched together. Use `--scope personal` or `enterprise` only when the user explicitly asks to restrict the search. Add `--include-sources` only for complete wording or provenance. Never replace the managed script with direct Obsidian CLI or `rg`.
 
 - `status: audited-fast-path`: read only the approved local files needed for the answer, then answer only from `approved_citations`. If they do not actually support the question, use the manual path instead.
 - `status: audited-no-result`: state `当前知识库无相关内容` and do not broaden.

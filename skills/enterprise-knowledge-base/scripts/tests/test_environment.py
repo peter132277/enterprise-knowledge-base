@@ -59,9 +59,9 @@ class EnvironmentTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-    def test_project_root_is_not_derived_from_the_installed_skill(self) -> None:
-        self.assertNotEqual(ENV.PROJECT_VAULT, SCRIPT.resolve().parents[4])
-        self.assertTrue((ENV.PROJECT_VAULT / "AGENTS.md").is_file())
+    def test_project_root_is_resolved_at_runtime_not_import_time(self) -> None:
+        self.assertFalse(hasattr(ENV, "PROJECT_VAULT"))
+        self.assertTrue(callable(ENV.discover_vault))
 
     def test_portable_fixture_passes_all_modes(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

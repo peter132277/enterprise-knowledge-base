@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -11,8 +12,38 @@ class VaultContextError(RuntimeError):
     pass
 
 
+PROJECT_BINDING_SCHEMA = "kb-project-binding/v1"
+
+
 def is_vault(path: Path) -> bool:
     return (path / "AGENTS.md").is_file() and (path / ".kb").is_dir()
+
+
+def canonical_path(path: Path) -> str:
+    return os.path.normcase(str(path.expanduser().resolve()))
+
+
+def validate_project_binding(path: Path) -> Path:
+    resolved = path.expanduser().resolve()
+    binding_path = resolved / ".kb/config/project-binding.json"
+    try:
+        binding = json.loads(binding_path.read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise VaultContextError(
+            f"The current project is not bound to an enterprise knowledge Vault: {resolved}"
+        ) from exc
+    expected = canonical_path(resolved)
+    if (
+        not isinstance(binding, dict)
+        or binding.get("schema") != PROJECT_BINDING_SCHEMA
+        or binding.get("binding_mode") != "same-root"
+        or binding.get("project_root") != expected
+        or binding.get("vault_root") != expected
+    ):
+        raise VaultContextError(
+            f"The Codex project and knowledge Vault binding is invalid: {resolved}"
+        )
+    return resolved
 
 
 def validate_vault(path: Path) -> Path:
@@ -21,21 +52,28 @@ def validate_vault(path: Path) -> Path:
         raise VaultContextError(
             f"Not a configured enterprise knowledge Vault: {resolved}"
         )
-    return resolved
+    return validate_project_binding(resolved)
 
 
-def discover_vault(explicit: str | Path | None = None) -> Path:
-    if explicit:
-        return validate_vault(Path(explicit))
-
-    configured = os.environ.get("KB_VAULT_ROOT", "").strip()
-    if configured:
-        return validate_vault(Path(configured))
-
+def current_project_vault() -> Path:
     current = Path.cwd().resolve()
     for candidate in (current, *current.parents):
         if is_vault(candidate):
-            return candidate
+            return validate_project_binding(candidate)
     raise VaultContextError(
-        "No configured enterprise knowledge Vault was found from the current project."
+        "No bound enterprise knowledge Vault was found from the current Codex project."
     )
+
+
+def discover_vault(explicit: str | Path | None = None) -> Path:
+    current = current_project_vault()
+    configured = os.environ.get("KB_VAULT_ROOT", "").strip()
+    if configured and canonical_path(Path(configured)) != canonical_path(current):
+        raise VaultContextError(
+            "KB_VAULT_ROOT cannot redirect knowledge operations outside the bound Codex project."
+        )
+    if explicit and canonical_path(Path(explicit)) != canonical_path(current):
+        raise VaultContextError(
+            "Knowledge operations are restricted to the Vault bound to the current Codex project."
+        )
+    return current

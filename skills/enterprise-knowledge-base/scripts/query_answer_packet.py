@@ -12,6 +12,7 @@ from typing import Any
 
 import check_query_compliance as compliance
 import query_current_vault as query_engine
+from vault_context import discover_vault
 
 
 MIN_TOP_SCORE = 20
@@ -158,7 +159,7 @@ def main() -> int:
     args = build_parser().parse_args()
     try:
         result = run_fast_query(
-            query_engine.PROJECT_VAULT,
+            discover_vault(),
             args.query,
             args.scope,
             args.include_sources,
@@ -168,7 +169,7 @@ def main() -> int:
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
-    except (query_engine.QueryError, compliance.ComplianceError) as exc:
+    except RuntimeError as exc:
         print(
             json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False),
             file=sys.stderr,

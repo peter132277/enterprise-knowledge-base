@@ -15,11 +15,11 @@ from pathlib import Path
 from typing import Any
 
 from query_current_vault import (
-    PROJECT_VAULT,
     query_sha256,
     sha256_file,
     sha256_json,
 )
+from vault_context import discover_vault
 
 
 ALLOWED_ROOTS = ("20_知识", "30_导航", "10_来源/提取")
@@ -237,8 +237,11 @@ def run(
     rejected_paths: list[str] | None = None,
 ) -> dict[str, Any]:
     audit_started = time.perf_counter()
-    if enforce_project and vault.resolve() != PROJECT_VAULT.resolve():
-        raise ComplianceError(f"Audit is restricted to {PROJECT_VAULT}")
+    if enforce_project:
+        try:
+            vault = discover_vault(vault)
+        except RuntimeError as exc:
+            raise ComplianceError(str(exc)) from exc
     load_started = time.perf_counter()
     receipt_path, receipt = load_receipt(vault.resolve(), receipt_value)
     load_duration_ms = (time.perf_counter() - load_started) * 1000
@@ -314,7 +317,7 @@ def main() -> int:
     args = build_parser().parse_args()
     try:
         result = run(
-            PROJECT_VAULT,
+            discover_vault(),
             args.question,
             args.receipt,
             args.cited_path,
@@ -323,7 +326,7 @@ def main() -> int:
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
-    except ComplianceError as exc:
+    except RuntimeError as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
         return 2
 

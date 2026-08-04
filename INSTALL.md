@@ -9,7 +9,9 @@
 3. 安装代理不要要求重启 Codex 或新建对话；应立即读取刚安装的 `enterprise-knowledge-base/SKILL.md`。
 4. 在当前对话直接进入首次配置，并按 Codex 每次显示的一个选项继续，不需要复制命令、ID、Token 或密钥。
 
-Windows 与 macOS 使用同一流程。向导会检测 Obsidian、Node.js 和飞书配置工具；任何软件安装都会先让用户选择。Codex 项目根目录与 Obsidian Vault 根目录始终是同一目录。插件界面列表可以稍后刷新，但不能阻断当前对话中的首次配置。
+Windows 与 macOS 使用同一流程。当前 Codex 项目根目录会与 Obsidian Vault 根目录建立一对一绑定；正常运行不能通过环境变量或显式路径跳转到其他项目。向导会检测 Obsidian、Node.js、Codex CLI 和飞书配置工具；任何软件安装都会先让用户选择。
+
+Claudian 是新机首次配置能力的一环，不是每次运行都要安装的依赖。向导先只读检查：已配置且支持 Codex 的 `YishenTu/claudian` 会原样复用，不下载、不覆盖；仅在新机缺失或版本不兼容、且用户选择自动安装后，才从固定校验版本安装并启用 Obsidian 社区插件 `Claudian`（插件 ID：`realclaudian`）。随后把当前 Vault 作为工作目录，并核对或写入本机 Codex CLI 的真实可执行路径。找不到 Codex CLI、资产哈希不匹配或插件回读不一致时安装失败关闭。
 
 ## 飞书管理员首次配置
 

@@ -20,7 +20,7 @@ class SkillRoutingTopologyTests(unittest.TestCase):
             (PLUGIN_ROOT / ".codex-plugin/plugin.json").read_text(encoding="utf-8")
         )
         self.assertEqual(manifest["interface"]["displayName"], "企业知识库")
-        self.assertEqual(manifest["version"], "0.3.0")
+        self.assertEqual(manifest["version"], "0.3.1")
 
     def test_single_entry_is_implicitly_invocable(self) -> None:
         yaml = read("agents/openai.yaml")
@@ -144,10 +144,20 @@ class SkillRoutingTopologyTests(unittest.TestCase):
         self.assertNotIn("codex plugin add", requirements)
         self.assertNotIn("查询企业知识：", readme)
         self.assertNotIn("查询我的个人知识：", readme)
+        self.assertIn("默认同时查询个人知识和企业知识", readme)
+        self.assertNotIn("查看待发布的企业知识", readme)
         self.assertIn("| 发布预览 | `发布到飞书` |", readme)
         self.assertNotIn("批量发布到飞书", readme)
+        self.assertIn("realclaudian", requirements)
+        self.assertIn("Codex CLI", requirements)
+        self.assertIn("不得把运行时访问重定向到其他项目", requirements)
+        self.assertIn("scope: all", combined)
+        setup = read("references/setup-workflow.md")
+        self.assertIn("install-claudian", setup)
+        self.assertIn("project-binding.json", setup)
+        self.assertNotIn("在“文档”目录创建企业知识库", setup)
         self.assertIn(
-            "company-config-schema.md", read("references/setup-workflow.md")
+            "company-config-schema.md", setup
         )
 
 
