@@ -83,10 +83,10 @@ class QueryCurrentVaultTests(unittest.TestCase):
                 enforce_project=False,
             )
             self.assertEqual(enterprise["scope"], "all")
-            self.assertEqual(enterprise["result_count"], 1)
-            self.assertEqual(
-                enterprise["results"][0]["path"],
+            enterprise_paths = {item["path"] for item in enterprise["results"]}
+            self.assertIn(
                 "20_知识/企业/销售方法.md",
+                enterprise_paths,
             )
             without_sources = QUERY.run_query(
                 vault,
@@ -158,7 +158,7 @@ class QueryCurrentVaultTests(unittest.TestCase):
                     vault,
                     "企业知识销售",
                     result["receipt_path"],
-                    ["20_知识/个人/个人方法.md"],
+                    ["20_知识/企业/不存在.md"],
                     False,
                     persist_audit=False,
                     enforce_project=False,

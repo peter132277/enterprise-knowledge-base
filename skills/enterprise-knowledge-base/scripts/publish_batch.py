@@ -48,6 +48,7 @@ def within(path: Path, root: Path) -> bool:
 
 
 def resolve_in_vault(vault: Path, value: str | Path) -> Path:
+    vault = vault.resolve()
     path = Path(value)
     if not path.is_absolute():
         path = vault / path
@@ -58,7 +59,7 @@ def resolve_in_vault(vault: Path, value: str | Path) -> Path:
 
 
 def relative_posix(path: Path, vault: Path) -> str:
-    return path.relative_to(vault).as_posix()
+    return path.resolve().relative_to(vault.resolve()).as_posix()
 
 
 def load_json(path: Path, default: Any = _MISSING) -> Any:

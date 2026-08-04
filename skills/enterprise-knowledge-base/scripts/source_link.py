@@ -44,6 +44,7 @@ def within(path: Path, root: Path) -> bool:
 
 
 def resolve_in_vault(vault: Path, value: str | Path) -> Path:
+    vault = vault.resolve()
     path = Path(value)
     if not path.is_absolute():
         path = vault / path
@@ -295,7 +296,7 @@ def main() -> None:
             print_json(
                 {
                     "ok": True,
-                    "output_relative": output.relative_to(vault).as_posix(),
+                    "output_relative": output.resolve().relative_to(vault.resolve()).as_posix(),
                     "final_payload_hash": sha256_bytes(output.read_bytes()),
                     "source_hash": source_hash,
                     "source_file_url": validate_source_url(args.source_url),
