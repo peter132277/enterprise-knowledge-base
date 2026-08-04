@@ -9,7 +9,7 @@ Use this Skill as the only visible and implicit entry for the configured knowled
 
 ## Start or resume setup
 
-For `开始安装企业知识库`, `继续安装`, missing Vault configuration, or an environment failure, read [setup-workflow.md](references/setup-workflow.md). Bind the current Codex project as the only Vault, install the verified Claudian dependency and configure its local Codex CLI path when the user chooses automatic setup. Present only the current human choice or action. Do not show commands, JSON, hashes, IDs, secrets, or internal stages.
+For `开始安装企业知识库`, `继续安装`, missing Vault configuration, or an environment failure, read [setup-workflow.md](references/setup-workflow.md). Plan the OS Documents/知识库 default read-only, then let `setup_wizard.py` install or reuse Obsidian, create the same-root Vault and project-only binding, configure verified Claudian with the local Codex CLI, and open Obsidian after one local confirmation. Ask only for an unavoidable OS prompt or one Codex `打开文件夹` action. Never ask the user to download, create, type a path, or copy a command, JSON, hash, ID, token, secret, or URL.
 
 The first role choice must be exactly:
 

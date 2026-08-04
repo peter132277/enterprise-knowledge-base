@@ -48,9 +48,12 @@ from membership_policy import (
 from feishu_company_adapter import CompanyAdapterError, LarkMembershipAdapter
 
 
-PLUGIN_VERSION = "0.4.0"
+PLUGIN_VERSION = "0.4.1"
 SCHEMA = "kb-setup-state/v3"
 OBSIDIAN_INTEGRATION_SCHEMA = "kb-obsidian-integration/v1"
+PROJECT_SKILL_NAME = "enterprise-knowledge-base"
+DEFAULT_VAULT_NAME = "知识库"
+LEGACY_SKILL_NAMES = ("manage-knowledge-base", "collect-local-knowledge", "publish-enterprise-knowledge")
 CLAUDIAN_PLUGIN_ID = "realclaudian"
 CLAUDIAN_VERSION = "2.0.44"
 CLAUDIAN_MINIMUM_CODEX_VERSION = "2.0.0"
@@ -94,7 +97,12 @@ def project_binding(vault: Path) -> dict[str, Any]:
         and value.get("vault_root") == resolved
         and value.get("binding_mode") == "same-root"
     )
-    return {"valid": valid, "value": value, "resolved_root": resolved}
+    project_specific = bool(
+        valid
+        and value.get("skill_name") == PROJECT_SKILL_NAME
+        and value.get("skill_scope") == "project-only"
+    )
+    return {"valid": valid, "project_specific": project_specific, "value": value, "resolved_root": resolved}
 
 
 def bind_project(vault: Path, project: Path) -> dict[str, Any]:
@@ -109,9 +117,120 @@ def bind_project(vault: Path, project: Path) -> dict[str, Any]:
         "binding_mode": "same-root",
         "project_root": canonical_path(project),
         "vault_root": canonical_path(vault),
+        "skill_name": PROJECT_SKILL_NAME,
+        "skill_scope": "project-only",
     }
     atomic_write_json(vault / ".kb/config/project-binding.json", value)
     return {"ok": True, "binding": value}
+
+
+def documents_directory() -> Path:
+    """Resolve the user's OS Documents folder without adding configuration."""
+    if platform.system() == "Windows":
+        try:
+            import winreg
+
+            key_name = r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders"
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_name) as key:
+                value = str(winreg.QueryValueEx(key, "Personal")[0]).strip()
+            if value:
+                return Path(os.path.expandvars(value)).expanduser().resolve()
+        except (ImportError, OSError, TypeError, ValueError):
+            pass
+    return (Path.home() / "Documents").resolve()
+
+
+def default_vault_path() -> Path:
+    return documents_directory() / DEFAULT_VAULT_NAME
+
+
+def current_project_matches(vault: Path, current: Path | None = None) -> bool:
+    target = vault.expanduser().resolve()
+    current = (current or Path.cwd()).expanduser().resolve()
+    return current == target or target in current.parents
+
+
+def install_plan(vault: Path | None = None) -> dict[str, Any]:
+    """Return a read-only, human-safe plan for Codex-led local setup."""
+    target = (vault or default_vault_path()).expanduser().resolve()
+    is_directory = target.is_dir()
+    entries = list(target.iterdir()) if is_directory else []
+    binding = project_binding(target)
+    configured = bool(
+        (target / "AGENTS.md").is_file()
+        and (target / ".kb").is_dir()
+        and binding["valid"]
+    )
+    legacy = bool(
+        (target / "AGENTS.md").is_file()
+        and (target / ".kb").is_dir()
+        and all((target / ".agents/skills" / name / "SKILL.md").is_file()
+                for name in LEGACY_SKILL_NAMES)
+    )
+    conflict = bool((target.exists() and not is_directory)
+                    or (entries and not configured and not legacy))
+    active = current_project_matches(target)
+    return {
+        "ok": not conflict,
+        "mode": "codex-led-local-setup",
+        "vault": str(target),
+        "codex_project": str(target),
+        "codex_project_name": target.name,
+        "default_path": vault is None,
+        "path_status": ("legacy" if legacy else "configured" if configured
+                        else "conflict" if conflict else "create"),
+        "legacy_skills": list(LEGACY_SKILL_NAMES) if legacy else [],
+        "project_binding": binding,
+        "current_codex_project_matches": active,
+        "requires_codex_project_open": not active,
+        "tools": tool_status(),
+        "confirmation": f"安装或复用 Obsidian，并将 {target} 配置为同根的 Codex 项目和 Obsidian Vault",
+        "blocked_reason": (
+            "The default knowledge directory is non-empty and is not a configured Vault."
+            if conflict
+            else ""
+        ),
+    }
+
+
+def retire_legacy_skills(vault: Path) -> dict[str, Any]:
+    vault = vault.resolve()
+    sources = [vault / ".agents/skills" / name for name in LEGACY_SKILL_NAMES]
+    existing = [path for path in sources if path.is_dir()]
+    if not existing:
+        return {"migrated": False, "backup": "", "skills": []}
+    if len(existing) != len(sources):
+        raise SetupError("The legacy three-Skill layout is incomplete.")
+    backup = vault / ".kb/legacy-skill-backup/v0.4.1"
+    if backup.exists():
+        raise SetupError("A legacy Skill backup already exists; inspect it before retrying.")
+    template = template_agents()
+    agents = vault / "AGENTS.md"
+    if not template.is_file() or not agents.is_file():
+        raise SetupError("The managed project rules required for migration are missing.")
+    backup.mkdir(parents=True)
+    backup_agents = backup / "AGENTS.md"
+    shutil.copy2(agents, backup_agents)
+    moved: list[tuple[Path, Path]] = []
+    try:
+        for source in sources:
+            destination = backup / source.name
+            shutil.move(str(source), str(destination))
+            moved.append((source, destination))
+        atomic_write_bytes(agents, template.read_bytes())
+    except Exception:
+        atomic_write_bytes(agents, backup_agents.read_bytes())
+        for source, destination in reversed(moved):
+            if destination.exists() and not source.exists():
+                shutil.move(str(destination), str(source))
+        backup_agents.unlink(missing_ok=True)
+        try:
+            backup.rmdir()
+        except OSError:
+            pass
+        raise
+    return {"migrated": True, "backup": backup.relative_to(vault).as_posix(),
+            "skills": list(LEGACY_SKILL_NAMES)}
 
 
 def plugin_root() -> Path:
@@ -234,15 +353,15 @@ def initialize(vault: Path, role: str, company_name: str) -> dict[str, Any]:
         "membership_verified": False,
         "employee_access_verified": False,
     }
-    atomic_write_json(vault / ".kb/config/organization.json", organization)
-    atomic_write_json(
-        vault / ".kb/config/setup-state.json",
-        {
-            "schema": SCHEMA,
-            "role": role,
-            "completed_stages": ["vault_initialized"],
-        },
-    )
+    organization_path = vault / ".kb/config/organization.json"
+    if not organization_path.exists():
+        atomic_write_json(organization_path, organization)
+    setup_path = vault / ".kb/config/setup-state.json"
+    if not setup_path.exists():
+        atomic_write_json(
+            setup_path,
+            {"schema": SCHEMA, "role": role, "completed_stages": ["vault_initialized"]},
+        )
     defaults = {
         ".kb/mappings/feishu_nodes.json": {
             "version": 2,
@@ -548,6 +667,8 @@ def install_obsidian(confirmed: bool) -> dict[str, Any]:
             "--exact",
             "--accept-source-agreements",
             "--accept-package-agreements",
+            "--disable-interactivity",
+            "--silent",
         ]
     elif system == "Darwin" and shutil.which("brew"):
         command = ["brew", "install", "--cask", "obsidian"]
@@ -860,12 +981,90 @@ def open_obsidian(vault: Path) -> dict[str, Any]:
     return {"ok": bool(opened), "uri_opened": bool(opened)}
 
 
+def bootstrap_local(
+    vault: Path | None,
+    role: str,
+    company_name: str,
+    confirmed: bool,
+    codex_path: str = "",
+) -> dict[str, Any]:
+    """Complete all automatable local setup after one explicit confirmation."""
+    if not confirmed:
+        raise SetupError("Automatic local setup requires explicit confirmation.")
+    plan = install_plan(vault)
+    if not plan["ok"]:
+        raise SetupError(str(plan["blocked_reason"]))
+    target = Path(plan["vault"])
+
+    obsidian = install_obsidian(True)
+    if not obsidian.get("ok"):
+        return {
+            **plan,
+            "ok": False,
+            "stage": "obsidian-installation-required",
+            "obsidian": obsidian,
+            "writes": 0,
+        }
+
+    if plan["path_status"] == "configured":
+        bind_project(target, target)
+    else:
+        initialize(target, role, company_name)
+
+    claudian = install_claudian(target, True, codex_path)
+    obsidian_open = open_obsidian(target)
+    legacy_migration = (
+        retire_legacy_skills(target)
+        if plan["path_status"] == "legacy"
+        else {"migrated": False, "backup": "", "skills": []}
+    )
+    final = inspect(target)
+    active = current_project_matches(target)
+    complete = bool(
+        final["project_binding"]["project_specific"]
+        and final["claudian"]["ready"]
+        and obsidian_open["ok"]
+    )
+    stage = ("obsidian-open-required" if not obsidian_open["ok"]
+             else "open-codex-project" if not active else "local-setup-complete")
+    return {
+        "ok": complete,
+        "mode": "codex-led-local-setup",
+        "stage": stage,
+        "vault": str(target),
+        "codex_project": str(target),
+        "codex_project_name": target.name,
+        "project_specific_skill": final["project_binding"]["project_specific"],
+        "obsidian": obsidian,
+        "obsidian_open": obsidian_open,
+        "claudian": claudian,
+        "legacy_migration": legacy_migration,
+        "requires_codex_project_open": not active,
+        "next_user_action": (
+            f"在 Codex 中打开文件夹：{target}"
+            if obsidian_open["ok"] and not active
+            else ""
+        ),
+        "role_options": final["role_options"],
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     inspect_parser = subparsers.add_parser("inspect")
     inspect_parser.add_argument("--vault", type=Path, required=True)
+
+    plan_parser = subparsers.add_parser("plan-install")
+    plan_parser.add_argument("--vault", type=Path)
+
+    bootstrap_parser = subparsers.add_parser("bootstrap-local")
+    bootstrap_parser.add_argument("--vault", type=Path)
+    bootstrap_parser.add_argument("--role", choices=sorted(ROLES), default="local")
+    bootstrap_parser.add_argument("--company-name", default="")
+    bootstrap_parser.add_argument("--codex-path", default="")
+    bootstrap_parser.add_argument("--yes", action="store_true")
 
     initialize_parser = subparsers.add_parser("initialize")
     initialize_parser.add_argument("--vault", type=Path, required=True)
@@ -921,6 +1120,18 @@ def main() -> int:
     try:
         if args.command == "inspect":
             result = inspect(args.vault.expanduser().resolve())
+        elif args.command == "plan-install":
+            result = install_plan(
+                args.vault.expanduser().resolve() if args.vault else None
+            )
+        elif args.command == "bootstrap-local":
+            result = bootstrap_local(
+                args.vault.expanduser().resolve() if args.vault else None,
+                args.role,
+                args.company_name,
+                args.yes,
+                args.codex_path,
+            )
         elif args.command == "initialize":
             result = initialize(
                 args.vault.expanduser().resolve(),

@@ -20,7 +20,7 @@ class SkillRoutingTopologyTests(unittest.TestCase):
             (PLUGIN_ROOT / ".codex-plugin/plugin.json").read_text(encoding="utf-8")
         )
         self.assertEqual(manifest["interface"]["displayName"], "企业知识库")
-        self.assertEqual(manifest["version"], "0.4.0")
+        self.assertEqual(manifest["version"], "0.4.1")
 
     def test_single_entry_is_implicitly_invocable(self) -> None:
         yaml = read("agents/openai.yaml")
@@ -131,7 +131,7 @@ class SkillRoutingTopologyTests(unittest.TestCase):
         prompt = prompt_match.group(1).strip()
         self.assertEqual(len(prompt.splitlines()), 1)
         self.assertIn("INSTALL_REQUIREMENTS.md", prompt)
-        self.assertIn("安装后直接进入配置流程", prompt)
+        self.assertIn("由 Codex 自动创建", prompt)
         self.assertNotIn("要求：", prompt)
         self.assertIn("不得要求重启 Codex", requirements)
         self.assertIn(
@@ -154,9 +154,11 @@ class SkillRoutingTopologyTests(unittest.TestCase):
         self.assertIn("scope: all", combined)
         self.assertNotIn("--scope <personal|enterprise|all>", combined)
         setup = read("references/setup-workflow.md")
-        self.assertIn("install-claudian", setup)
+        self.assertIn("bootstrap-local", setup)
         self.assertIn("project-binding.json", setup)
-        self.assertNotIn("在“文档”目录创建企业知识库", setup)
+        self.assertIn("Documents folder", setup)
+        self.assertIn("知识库", setup)
+        self.assertIn("bootstrap-local", setup)
         self.assertIn(
             "company-config-schema.md", setup
         )
