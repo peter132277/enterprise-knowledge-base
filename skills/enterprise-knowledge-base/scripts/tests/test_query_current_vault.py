@@ -254,7 +254,7 @@ class QueryCurrentVaultTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             vault = Path(folder)
             self.make_vault(vault)
-            target = next(vault.rglob("*.md")).parent / "candidate.md"
+            target = vault / "20_知识/个人/candidate.md"
             target.write_text(
                 "# generic-candidate\n\ngeneric-candidate\n",
                 encoding="utf-8",
