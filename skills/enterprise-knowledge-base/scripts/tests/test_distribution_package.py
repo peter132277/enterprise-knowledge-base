@@ -1,4 +1,7 @@
 import importlib.util
+import json
+import subprocess
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -29,6 +32,41 @@ class DistributionPackageTests(unittest.TestCase):
             self.assertFalse(any("__pycache__" in name for name in names))
             self.assertFalse(any(name.startswith(".github/") for name in names))
             self.assertFalse(any(name.endswith((".db", ".sqlite", ".pyc")) for name in names))
+            self.assertIn("assets/vault-template/AGENTS.md", names)
+
+    def test_extracted_distribution_can_initialize_a_new_vault(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            package = root / "plugin.zip"
+            extracted = root / "plugin"
+            vault = root / "知识库"
+            PACKAGE.build(package)
+            with zipfile.ZipFile(package) as archive:
+                archive.extractall(extracted)
+            setup = extracted / "skills/enterprise-knowledge-base/scripts/setup_wizard.py"
+            run = subprocess.run(
+                [
+                    sys.executable,
+                    "-X",
+                    "utf8",
+                    str(setup),
+                    "initialize",
+                    "--vault",
+                    str(vault),
+                    "--role",
+                    "local",
+                ],
+                cwd=extracted,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            result = json.loads(run.stdout)
+            self.assertTrue(result["configured"])
+            self.assertTrue((vault / "AGENTS.md").is_file())
+            self.assertTrue(result["project_binding"]["project_specific"])
 
 
 if __name__ == "__main__":

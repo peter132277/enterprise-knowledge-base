@@ -12,7 +12,14 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
-TOP_LEVEL = (".codex-plugin", "skills", "README.md", "INSTALL.md", "INSTALL_REQUIREMENTS.md")
+TOP_LEVEL = (
+    ".codex-plugin",
+    "assets",
+    "skills",
+    "README.md",
+    "INSTALL.md",
+    "INSTALL_REQUIREMENTS.md",
+)
 FORBIDDEN_PARTS = {"tests", "__pycache__", ".pytest_cache", ".github"}
 FORBIDDEN_SUFFIXES = {".pyc", ".pyo", ".db", ".sqlite", ".sqlite3"}
 MAX_ZIP_BYTES = 250 * 1024

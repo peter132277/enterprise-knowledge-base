@@ -2,15 +2,13 @@
 
 Keep setup conversational. Show one decision at a time and never ask a novice to copy a command, token, node ID, JSON value, App Secret, or authorization URL.
 
-## 1. Inspect before changing anything
+## 1. Build the read-only installation plan
 
-Resolve the current Codex project root and run `setup_wizard.py inspect --vault <current-project-root>`. The current Codex project is the only allowed Vault candidate. Show:
+Run `setup_wizard.py plan-install` without asking the user for a path. Resolve the OS Documents folder and use its `知识库` child as the default Codex project and Obsidian Vault. Show the resolved readable path and one combined confirmation. Do not ask the user to download files, create folders, type paths, copy commands, or choose an internal configuration value.
 
-- `使用当前 Codex 项目`
+Reuse an existing valid bound knowledge Vault. Recognize the exact legacy three-Skill layout as a migratable Vault: after confirmation, back up its `AGENTS.md` and move the three old Skill folders under `.kb/legacy-skill-backup/v0.4.1` before activating the single project-only Skill. Create a missing or empty default directory automatically. Any other non-empty `知识库` fails closed; never overwrite it or silently choose a suffixed directory.
 
-Do not create a Vault elsewhere, accept an external Vault path, or use `KB_VAULT_ROOT` to redirect runtime access. If the current project is an unrelated non-empty directory, stop and ask for the single Codex UI action `打开要作为知识库的文件夹`; do not claim that Codex saved-project registration was automatic. Resume only after that folder is the active Codex project.
-
-## 2. Select the role
+## 2. Select the role and authorize local automation
 
 Show exactly:
 
@@ -18,22 +16,19 @@ Show exactly:
 - `我是普通员工，加入公司已有知识库`
 - `暂时只使用本地知识库`
 
-Initialize only after the user selects a role. Use `setup_wizard.py initialize`; it writes a same-root project binding under `.kb/config/project-binding.json`. Preserve an existing compatible Vault and never overwrite an unrelated non-empty directory. Every runtime route must resolve the nearest bound current project and reject a different explicit path or environment override.
+After the role choice, show one local authorization: `自动安装并配置（默认）` or `暂不配置`. The first choice authorizes Codex to install or reuse Obsidian, create the default Vault, write the same-root project binding, configure Claudian, and open Obsidian. It never authorizes a Feishu upload, publication, member change, permission change, or deletion.
 
-## 3. Reuse the configured desktop or complete new-machine setup
+## 3. Complete every automatable local step
 
-Treat Obsidian, Claudian, and the Claudian Codex provider as one new-machine setup capability. Inspect them read-only first. When `inspect` reports the existing Claudian integration as ready, reuse it and do not show an installation choice, download assets, rewrite its settings, or reinstall anything.
+Run `setup_wizard.py bootstrap-local --role <selected-role> --yes`; omit `--vault` to use the default `知识库` directory. Treat Obsidian, Vault creation, project binding, Claudian, its Codex provider, and opening Obsidian as one resumable capability. Codex performs the work and shows only the result or the one action it cannot perform.
 
-If Obsidian is absent, show:
+On Windows use Winget package `Obsidian.Obsidian` non-interactively; on macOS reuse an existing app or use the existing Homebrew cask `obsidian`. If the platform package manager is unavailable, open the official download page and ask only for the unavoidable OS installer action. Never install Homebrew as a hidden prerequisite.
 
-- `自动安装并打开`
-- `暂不安装，稍后再说`
+Reuse an existing compatible `YishenTu/claudian` installation. Otherwise install the pinned SHA-256-verified `realclaudian`, enable it, detect the real local Codex CLI, and preserve or update only its Codex provider path. Do not install a similarly named plugin, accept a hash mismatch, overwrite unrelated settings, or report completion when Codex CLI cannot be found.
 
-Software installation requires the user's explicit selection. Run `setup_wizard.py install-obsidian --yes` only after `自动安装并打开`. On Windows prefer the verified Winget package `Obsidian.Obsidian`. On macOS prefer an existing Obsidian app, then Homebrew cask `obsidian` when Homebrew is already available. If the platform package manager is unavailable, open the official download page in the in-app browser. Do not install Homebrew as a hidden prerequisite.
+The default directory name is the Codex project name `知识库`. Write `skill_name: enterprise-knowledge-base` and `skill_scope: project-only` into `.kb/config/project-binding.json` and install the project `AGENTS.md`; runtime still rejects every other project, explicit path, or `KB_VAULT_ROOT` redirect.
 
-On a new or incomplete machine, the same `自动安装并打开` selection also authorizes the required local Claudian setup. Run `setup_wizard.py install-claudian --vault <current-project-root> --yes`. Reuse an existing compatible `YishenTu/claudian` installation first; install the pinned SHA-256-verified release only when absent. The required plugin ID is `realclaudian`. Enable it in `.obsidian/community-plugins.json`, detect the real local Codex CLI executable, and preserve or update only the Codex provider path in `.claudian/claudian-settings.json`. Do not install a similarly named plugin, accept a hash mismatch, overwrite unrelated plugin files, or report success when the Codex CLI cannot be found.
-
-Then run `setup_wizard.py open-obsidian --vault <current-project-root>`. The command must reject a missing or mismatched project binding. The Obsidian URI opens the already-bound Codex project as its Vault; it does not register a separate Codex project.
+Open the same root through the Obsidian URI. If Codex desktop cannot register a saved project programmatically, ask for exactly one UI action: `在 Codex 中打开“<resolved-path>/知识库”文件夹`. Do not claim automatic registration. Resume from local state after the folder becomes the active project; do not make the user repeat installation steps.
 
 ## 4. Configure Feishu as an administrator
 
