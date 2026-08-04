@@ -142,6 +142,10 @@ class SkillRoutingTopologyTests(unittest.TestCase):
         self.assertIn("尚未获得单独授权的真实飞书写入保持为零", requirements)
         self.assertNotIn("codex plugin add", readme)
         self.assertNotIn("codex plugin add", requirements)
+        self.assertNotIn("查询企业知识：", readme)
+        self.assertNotIn("查询我的个人知识：", readme)
+        self.assertIn("| 发布预览 | `发布到飞书` |", readme)
+        self.assertNotIn("批量发布到飞书", readme)
         self.assertIn(
             "company-config-schema.md", read("references/setup-workflow.md")
         )
