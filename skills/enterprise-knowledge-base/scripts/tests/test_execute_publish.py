@@ -28,6 +28,7 @@ class FakeLark:
         self.source_name = source_name
         self.commands: list[list[str]] = []
         self.remote_markdown = ""
+        self.raise_after_update = False
 
     def __call__(self, arguments: list[str]) -> dict:
         self.commands.append(arguments)
@@ -37,7 +38,22 @@ class FakeLark:
         if prefix == ["wiki", "+node-list"]:
             return {
                 "ok": True,
-                "data": {"nodes": [], "has_more": False, "page_token": ""},
+                "data": {
+                    "nodes": (
+                        [
+                            {
+                                "title": "发布执行测试",
+                                "node_token": "node-created",
+                                "obj_token": "obj-created",
+                                "obj_type": "docx",
+                            }
+                        ]
+                        if self.remote_markdown
+                        else []
+                    ),
+                    "has_more": False,
+                    "page_token": "",
+                },
             }
         if prefix == ["wiki", "+node-create"]:
             return {
@@ -75,6 +91,8 @@ class FakeLark:
             self.remote_markdown = (self.vault / content_arg[1:]).read_text(
                 encoding="utf-8"
             )
+            if self.raise_after_update:
+                raise EXECUTE.ExecutionError("network timeout after overwrite")
             return {
                 "ok": True,
                 "data": {
@@ -165,6 +183,7 @@ class ExecutePublishTests(unittest.TestCase):
             f"""---
 title: 发布执行测试
 type: source-note
+imported_at: "2026-08-05T10:00:00+08:00"
 status: ready-to-publish
 scope: enterprise
 sensitivity: internal
@@ -277,6 +296,23 @@ source_id: "sha256:{source_hash}"
         )
         return result, fake, vault
 
+    def run_failed_readback(self) -> tuple[FakeLark, Path, Path, str]:
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        vault = Path(folder.name)
+        self.make_vault(vault)
+        preview = BATCH.create_preview(vault)
+        manifest_path = vault / preview["_internal"]["manifest_relative"]
+        BATCH.confirm_batch(vault, manifest_path, BATCH.EXACT_CONFIRMATION)
+        fake = FakeLark(vault, mutate_fetch=True)
+        result = EXECUTE.execute_batch(vault, manifest_path, runner=fake)
+        self.assertFalse(result["ok"])
+        manifest = BATCH.load_json(manifest_path)
+        item = manifest["items"][0]
+        self.assertEqual(item["state"], "failed")
+        fake.mutate_fetch = False
+        return fake, vault, manifest_path, item["item_id"]
+
     def test_executes_one_confirmed_batch_and_finalizes_locally(self) -> None:
         result, fake, vault = self.run_success("success")
         self.assertTrue(result["ok"])
@@ -364,6 +400,146 @@ source_id: "sha256:{source_hash}"
         )
         self.assertFalse(result["ok"])
         self.assertEqual(result["summary"]["failed"], 1)
+
+    def test_recovery_diagnosis_is_read_only(self) -> None:
+        fake, vault, manifest_path, item_id = self.run_failed_readback()
+        before = manifest_path.read_bytes()
+        vault_snapshot = {
+            path.relative_to(vault).as_posix(): (
+                path.read_bytes(),
+                path.stat().st_mtime_ns,
+            )
+            for path in vault.rglob("*")
+            if path.is_file()
+        }
+        result = EXECUTE.diagnose_recovery(
+            vault, manifest_path, item_id, runner=fake
+        )
+        self.assertTrue(result["eligible"])
+        self.assertEqual(result["action"], "finalize-only")
+        self.assertEqual(result["remote_writes"], 0)
+        self.assertEqual(manifest_path.read_bytes(), before)
+        self.assertEqual(
+            {
+                path.relative_to(vault).as_posix(): (
+                    path.read_bytes(),
+                    path.stat().st_mtime_ns,
+                )
+                for path in vault.rglob("*")
+                if path.is_file()
+            },
+            vault_snapshot,
+        )
+        self.assertFalse(
+            any(command[:2] == ["docs", "+update"] for command in fake.commands[-5:])
+        )
+
+    def test_format_only_recovery_finalizes_without_remote_write(self) -> None:
+        fake, vault, manifest_path, item_id = self.run_failed_readback()
+        fake.remote_markdown = fake.remote_markdown.replace("正文。", "**正文。**")
+        preview = EXECUTE.preview_recovery(
+            vault, manifest_path, item_id, runner=fake
+        )
+        self.assertEqual(preview["classification"], "format-only")
+        updates_before = sum(
+            command[:2] == ["docs", "+update"] for command in fake.commands
+        )
+        result = EXECUTE.confirm_recovery(
+            vault,
+            manifest_path,
+            item_id,
+            EXECUTE.RECOVERY_CONFIRMATION,
+            runner=fake,
+            synced_at="2026-08-05T10:00:00+08:00",
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["remote_writes"], 0)
+        self.assertEqual(result["node_writes"], 0)
+        self.assertEqual(result["source_uploads"], 0)
+        self.assertEqual(
+            sum(command[:2] == ["docs", "+update"] for command in fake.commands),
+            updates_before,
+        )
+
+    def test_semantic_mismatch_recovery_overwrites_existing_document_once(self) -> None:
+        fake, vault, manifest_path, item_id = self.run_failed_readback()
+        fake.remote_markdown = fake.remote_markdown.replace("正文。", "远端不一致。")
+        preview = EXECUTE.preview_recovery(
+            vault, manifest_path, item_id, runner=fake
+        )
+        self.assertEqual(preview["action"], "overwrite-existing")
+        updates_before = sum(
+            command[:2] == ["docs", "+update"] for command in fake.commands
+        )
+        node_creates_before = sum(
+            command[:2] == ["wiki", "+node-create"] for command in fake.commands
+        )
+        result = EXECUTE.confirm_recovery(
+            vault,
+            manifest_path,
+            item_id,
+            EXECUTE.RECOVERY_CONFIRMATION,
+            runner=fake,
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["remote_writes"], 1)
+        self.assertEqual(
+            sum(command[:2] == ["docs", "+update"] for command in fake.commands),
+            updates_before + 1,
+        )
+        self.assertEqual(
+            sum(command[:2] == ["wiki", "+node-create"] for command in fake.commands),
+            node_creates_before,
+        )
+
+    def test_recovery_confirmation_fails_when_evidence_changes(self) -> None:
+        fake, vault, manifest_path, item_id = self.run_failed_readback()
+        fake.remote_markdown = fake.remote_markdown.replace("正文。", "远端不一致。")
+        EXECUTE.preview_recovery(vault, manifest_path, item_id, runner=fake)
+        fake.remote_markdown = fake.remote_markdown.replace("远端不一致。", "人工修改。")
+        with self.assertRaisesRegex(EXECUTE.ExecutionError, "evidence changed"):
+            EXECUTE.confirm_recovery(
+                vault,
+                manifest_path,
+                item_id,
+                EXECUTE.RECOVERY_CONFIRMATION,
+                runner=fake,
+            )
+
+    def test_unknown_recovery_write_converges_by_readback_without_second_write(self) -> None:
+        fake, vault, manifest_path, item_id = self.run_failed_readback()
+        fake.remote_markdown = fake.remote_markdown.replace("正文。", "远端不一致。")
+        EXECUTE.preview_recovery(vault, manifest_path, item_id, runner=fake)
+        fake.raise_after_update = True
+        with self.assertRaisesRegex(EXECUTE.ExecutionError, "outcome is unknown"):
+            EXECUTE.confirm_recovery(
+                vault,
+                manifest_path,
+                item_id,
+                EXECUTE.RECOVERY_CONFIRMATION,
+                runner=fake,
+            )
+        fake.raise_after_update = False
+        updates_after_unknown = sum(
+            command[:2] == ["docs", "+update"] for command in fake.commands
+        )
+        preview = EXECUTE.preview_recovery(
+            vault, manifest_path, item_id, runner=fake
+        )
+        self.assertEqual(preview["action"], "finalize-only")
+        result = EXECUTE.confirm_recovery(
+            vault,
+            manifest_path,
+            item_id,
+            EXECUTE.RECOVERY_CONFIRMATION,
+            runner=fake,
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["remote_writes"], 0)
+        self.assertEqual(
+            sum(command[:2] == ["docs", "+update"] for command in fake.commands),
+            updates_after_unknown,
+        )
 
     def test_original_file_types_share_drive_and_source_link_contract(self) -> None:
         samples = {

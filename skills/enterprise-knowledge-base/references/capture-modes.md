@@ -22,3 +22,5 @@ For a `standalone-collection`, verify the complete extraction before creating na
 - Maintain `.kb/state/document_collections.json` with evidence, landing, index, and per-volume hashes.
 
 Never duplicate every native item into `20_知识`.
+
+Every committed source note must have one timezone-aware ISO 8601 `imported_at` property. The transaction creates it at the first local commit, reuses an existing verified value on duplicate collection or repair, and never substitutes file modification time. Keep `imported_at` distinct from later Feishu `published_at`.

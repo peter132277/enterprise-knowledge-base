@@ -465,6 +465,79 @@ def parse_frontmatter_text(text: str) -> dict[str, Any]:
     return result
 
 
+def validate_imported_at(value: Any) -> str:
+    timestamp = str(value or "").strip()
+    if not timestamp:
+        raise PipelineError("source_note requires imported_at with an explicit timezone")
+    try:
+        parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise PipelineError("source_note imported_at must be an ISO 8601 timestamp") from exc
+    if parsed.utcoffset() is None:
+        raise PipelineError("source_note imported_at must include an explicit timezone")
+    return timestamp
+
+
+def add_frontmatter_field(text: str, key: str, value: str) -> str:
+    lines = text.splitlines(keepends=True)
+    if not lines or lines[0].strip() != "---":
+        raise PipelineError("source_note must have valid frontmatter")
+    for index, line in enumerate(lines[1:], start=1):
+        if line.strip() == "---":
+            newline = "\r\n" if line.endswith("\r\n") else "\n"
+            lines.insert(index, f"{key}: {json.dumps(value, ensure_ascii=False)}{newline}")
+            return "".join(lines)
+    raise PipelineError("source_note must have closed frontmatter")
+
+
+def ensure_manifest_imported_at(vault: Path, manifest: dict[str, Any]) -> str:
+    """Lock the first local collection time into the source note before commit."""
+    source_note = str(manifest.get("source_note", "")).replace("\\", "/").strip("/")
+    output = next(
+        (
+            item
+            for item in manifest.get("outputs", [])
+            if isinstance(item, dict)
+            and str(item.get("path", "")).replace("\\", "/").strip("/")
+            == source_note
+        ),
+        None,
+    )
+    if output is None or not isinstance(output.get("content"), str):
+        raise PipelineError("source_note must match one text output")
+    content = str(output["content"])
+    current = parse_frontmatter_text(content).get("imported_at")
+    if current:
+        timestamp = validate_imported_at(current)
+    else:
+        candidates: list[Any] = []
+        existing_note = vault / Path(source_note)
+        if existing_note.is_file():
+            candidates.append(
+                parse_frontmatter_text(
+                    existing_note.read_text(encoding="utf-8-sig")
+                ).get("imported_at")
+            )
+        digest = str(manifest.get("source", {}).get("sha256", "")).lower()
+        processed = load_json(
+            vault / ".kb/state/processed_files.json",
+            {"files": []},
+        )
+        existing_record = lookup_hash(processed, digest)
+        if existing_record:
+            candidates.append(existing_record.get("imported_at"))
+        candidates.append(manifest.get("metadata", {}).get("imported_at"))
+        candidate = next((value for value in candidates if str(value or "").strip()), "")
+        timestamp = (
+            validate_imported_at(candidate)
+            if candidate
+            else datetime.now().astimezone().isoformat(timespec="seconds")
+        )
+        output["content"] = add_frontmatter_field(content, "imported_at", timestamp)
+    manifest.setdefault("metadata", {})["imported_at"] = timestamp
+    return timestamp
+
+
 def structure_fields_from_frontmatter(frontmatter: dict[str, Any]) -> dict[str, Any]:
     fields: dict[str, Any] = {}
     capture_mode = str(frontmatter.get("capture_mode", "")).strip()
@@ -682,6 +755,7 @@ def build_state_documents(
         "source_note": normalize_rel_path(manifest["source_note"]),
         "scope": manifest["route"],
         "processed_at": metadata.get("processed_at", datetime.now().astimezone().date().isoformat()),
+        "imported_at": validate_imported_at(frontmatter.get("imported_at")),
         "status": "complete",
     }
     if isinstance(source.get("extraction_profile"), dict):
@@ -898,6 +972,7 @@ def validate_manifest(vault: Path, manifest: dict[str, Any]) -> tuple[dict[str, 
         raise PipelineError("Manifest must update an index and create a processing log")
 
     fm = parse_frontmatter_text(source_note_text)
+    validate_imported_at(fm.get("imported_at"))
     structure_fields_from_frontmatter(fm)
     if fm.get("source_hash", "").lower() != digest:
         raise PipelineError("source_note source_hash does not match source")
@@ -1102,6 +1177,7 @@ def commit(vault: Path, manifest_path: Path, consume: bool) -> dict[str, Any]:
             raise PipelineError("--consume requires the manifest to be under .kb/temp") from exc
     validation_started = time.perf_counter()
     manifest = load_json(manifest_path, {})
+    ensure_manifest_imported_at(vault, manifest)
     source, source_note_text = validate_manifest(vault, manifest)
     source_path = Path(source["path"]).resolve()
     validation_duration_ms = (time.perf_counter() - validation_started) * 1000
@@ -1270,6 +1346,7 @@ def repair_state(
             "source_note": rel_note,
             "scope": fm.get("scope", ""),
             "processed_at": fm.get("updated") or fm.get("created") or "",
+            "imported_at": fm.get("imported_at") or existing_record.get("imported_at", ""),
             "status": "complete" if stored and extraction else "incomplete",
         }
         record.update(structure_fields_from_frontmatter(fm))

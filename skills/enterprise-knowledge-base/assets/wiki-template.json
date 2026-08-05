@@ -1,0 +1,48 @@
+{
+  "schema": "kb-wiki-template/v1",
+  "template_id": "obsidian-enterprise-knowledge-base",
+  "nodes": [
+    {
+      "key": "home",
+      "title": "00｜知识库首页",
+      "parent_key": "",
+      "obj_type": "docx"
+    },
+    {
+      "key": "business-product",
+      "title": "01｜业务与产品",
+      "parent_key": "",
+      "obj_type": "docx"
+    },
+    {
+      "key": "customer-growth",
+      "title": "02｜客户与增长",
+      "parent_key": "",
+      "obj_type": "docx"
+    },
+    {
+      "key": "process-delivery",
+      "title": "03｜流程与交付",
+      "parent_key": "",
+      "obj_type": "docx"
+    },
+    {
+      "key": "operations-compliance",
+      "title": "04｜经营与合规",
+      "parent_key": "",
+      "obj_type": "docx"
+    },
+    {
+      "key": "data-index",
+      "title": "91｜数据索引",
+      "parent_key": "home",
+      "obj_type": "docx"
+    },
+    {
+      "key": "sync-log",
+      "title": "98｜同步记录",
+      "parent_key": "home",
+      "obj_type": "docx"
+    }
+  ]
+}

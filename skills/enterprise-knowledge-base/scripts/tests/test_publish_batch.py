@@ -57,6 +57,7 @@ class PublishBatchTests(unittest.TestCase):
             note.write_text(
                 f"""---
 title: 测试知识 {index}
+imported_at: "2026-08-05T10:00:00+08:00"
 status: ready-to-publish
 scope: enterprise
 sensitivity: internal

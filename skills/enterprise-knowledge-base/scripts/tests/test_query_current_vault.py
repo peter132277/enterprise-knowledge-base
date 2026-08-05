@@ -404,7 +404,7 @@ class QueryCurrentVaultTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (vault / ".kb/config/organization.json").write_text(
-                json.dumps({"schema": "kb-organization/v3", "role": "local"}),
+                json.dumps({"schema": "kb-organization/v4", "role": "local"}),
                 encoding="utf-8",
             )
             (vault / "20_知识/个人/个人方法.md").write_text(

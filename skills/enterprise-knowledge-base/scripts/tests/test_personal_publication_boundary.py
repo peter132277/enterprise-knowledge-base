@@ -27,6 +27,7 @@ def write_note(path: Path, *, scope: str, title: str, publish: str = "false") ->
                 "---",
                 f"title: {title}",
                 "type: source-note",
+                'imported_at: "2026-08-05T10:00:00+08:00"',
                 f"scope: {scope}",
                 "status: ready-to-publish",
                 "review_status: reviewed",

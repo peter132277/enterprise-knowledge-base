@@ -12,9 +12,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 
-PLUGIN_VERSION = "0.5.0"
-ORGANIZATION_SCHEMA = "kb-organization/v3"
-COMPANY_CONFIG_SCHEMA = "kb-company-config/v3"
+PLUGIN_VERSION = "0.7.1"
+ORGANIZATION_SCHEMA = "kb-organization/v4"
+COMPANY_CONFIG_SCHEMA = "kb-company-config/v4"
 PROJECT_BINDING_SCHEMA = "kb-project-binding/v1"
 COMPANY_SYNC_SCHEMA = "kb-company-sync/v2"
 COMPANY_SYNC_SESSION_SCHEMA = "kb-company-sync-session/v1"

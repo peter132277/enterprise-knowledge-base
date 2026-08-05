@@ -19,7 +19,7 @@ class SkillRoutingTopologyTests(unittest.TestCase):
             (PLUGIN_ROOT / ".codex-plugin/plugin.json").read_text(encoding="utf-8")
         )
         self.assertEqual(manifest["interface"]["displayName"], "企业知识库")
-        self.assertEqual(manifest["version"], "0.5.0")
+        self.assertEqual(manifest["version"], "0.7.1")
 
     def test_single_entry_is_implicitly_invocable(self) -> None:
         yaml = read("agents/openai.yaml")
@@ -69,7 +69,7 @@ class SkillRoutingTopologyTests(unittest.TestCase):
             "全公司内部员工",
             "查询、收录并发布",
             "确认更新知识空间成员",
-            "kb-company-config/v3",
+            "kb-company-config/v4",
         ):
             self.assertIn(fragment, router + setup)
         self.assertNotIn("subprocess", adapter)
@@ -141,6 +141,23 @@ class SkillRoutingTopologyTests(unittest.TestCase):
         self.assertIn("project-binding.json", setup)
         self.assertIn("current project", setup)
         self.assertNotIn("Documents/知识库", setup)
+        self.assertIn("新建飞书知识库", setup)
+        self.assertIn("连接已有飞书知识库", setup)
+        self.assertIn("确认创建知识空间", setup)
+        self.assertIn("确认初始化知识库模板", setup)
+        self.assertIn("确认更新知识空间成员", setup)
+        self.assertIn("wiki:space:retrieve", setup)
+        self.assertIn("wiki:space:write_only", setup)
+        self.assertIn("wiki:node:retrieve", setup)
+        self.assertIn("wiki:node:create", setup)
+        self.assertLess(
+            setup.index("确认创建知识空间"),
+            setup.index("确认初始化知识库模板"),
+        )
+        self.assertLess(
+            setup.index("确认初始化知识库模板"),
+            setup.index("确认更新知识空间成员"),
+        )
 
 
 if __name__ == "__main__":
