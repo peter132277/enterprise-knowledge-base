@@ -112,8 +112,8 @@ def verify_receipt(
         credential = None
     retrieval_backend = str(receipt.get("retrieval_backend", "legacy-python"))
     if retrieval_backend not in {
-        "obsidian-cli",
         "rg",
+        "python",
         "python-filesystem",
         "legacy-python",
     }:

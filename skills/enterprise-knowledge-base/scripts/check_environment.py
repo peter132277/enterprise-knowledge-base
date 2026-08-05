@@ -12,7 +12,7 @@ import sys
 from pathlib import Path, PureWindowsPath
 from typing import Any, Callable
 
-from query_current_vault import find_obsidian_cli
+from kb_core import load_json
 from vault_context import discover_vault
 
 
@@ -138,7 +138,6 @@ def active_path_values(vault: Path) -> list[tuple[str, str, str]]:
         vault / ".kb/mappings/feishu_nodes.json",
         vault / ".kb/mappings/feishu_documents.json",
         vault / ".kb/state/processed_files.json",
-        vault / ".obsidian/plugins/feishu-lark-cli-sync/data.json",
     )
     for path in json_files:
         if not path.is_file():
@@ -160,7 +159,6 @@ def run_checks(
     mode: str,
     *,
     tool_lookup: Callable[[str], str | None] = shutil.which,
-    obsidian_lookup: Callable[[], Path | None] = find_obsidian_cli,
 ) -> dict[str, Any]:
     vault = vault.resolve()
     errors: list[dict[str, str]] = []
@@ -226,42 +224,56 @@ def run_checks(
         )
 
     rg_path = tool_lookup("rg")
-    obsidian_path = obsidian_lookup()
     if mode in {"all", "query"}:
         checks.append(
             {
                 "name": "query-backend",
                 "ok": True,
-                "obsidian_cli": bool(obsidian_path),
                 "rg": bool(rg_path),
                 "python_fallback": True,
             }
         )
-        if not obsidian_path:
-            warnings.append({"code": "obsidian-cli-unavailable", "fallback": "rg"})
         if not rg_path:
             warnings.append({"code": "rg-unavailable", "fallback": "python"})
 
     if mode in {"all", "publish"}:
-        lark_path = tool_lookup("lark-cli")
-        checks.append({"name": "lark-cli", "ok": bool(lark_path)})
-        if not lark_path:
-            errors.append({"code": "lark-cli-unavailable"})
-        nodes = vault / ".kb/mappings/feishu_nodes.json"
-        documents = vault / ".kb/mappings/feishu_documents.json"
-        for name, path in (("feishu-nodes", nodes), ("feishu-documents", documents)):
-            valid = False
-            if path.is_file():
-                try:
-                    valid = isinstance(
-                        json.loads(path.read_text(encoding="utf-8")),
-                        dict,
-                    )
-                except (OSError, UnicodeError, json.JSONDecodeError):
-                    valid = False
-            checks.append({"name": name, "ok": valid})
-            if not valid:
-                errors.append({"code": "invalid-mapping", "path": str(path.name)})
+        organization = load_json(vault / ".kb/config/organization.json", {})
+        role = str(organization.get("role", "")) if isinstance(organization, dict) else ""
+        feishu_enabled = bool(
+            isinstance(organization, dict)
+            and organization.get("feishu_enabled") is True
+            and role in {"admin", "employee"}
+        )
+        checks.append(
+            {
+                "name": "feishu-capability",
+                "ok": feishu_enabled or mode == "all",
+                "enabled": feishu_enabled,
+                "role": role,
+            }
+        )
+        if mode == "publish" and not feishu_enabled:
+            errors.append({"code": "feishu-disabled-for-role", "role": role})
+        if feishu_enabled:
+            lark_path = tool_lookup("lark-cli")
+            checks.append({"name": "lark-cli", "ok": bool(lark_path)})
+            if not lark_path:
+                errors.append({"code": "lark-cli-unavailable"})
+            nodes = vault / ".kb/mappings/feishu_nodes.json"
+            documents = vault / ".kb/mappings/feishu_documents.json"
+            for name, path in (("feishu-nodes", nodes), ("feishu-documents", documents)):
+                valid = False
+                if path.is_file():
+                    try:
+                        valid = isinstance(
+                            json.loads(path.read_text(encoding="utf-8")),
+                            dict,
+                        )
+                    except (OSError, UnicodeError, json.JSONDecodeError):
+                        valid = False
+                checks.append({"name": name, "ok": valid})
+                if not valid:
+                    errors.append({"code": "invalid-mapping", "path": str(path.name)})
 
     return {
         "ok": not errors,

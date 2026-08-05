@@ -5,7 +5,7 @@ The exported employee package uses `kb-company-config/v3` and contains only port
 ```json
 {
   "schema": "kb-company-config/v3",
-  "minimum_plugin_version": "0.4.1",
+  "minimum_plugin_version": "0.5.0",
   "company_name": "Readable company name",
   "feishu_brand": "feishu",
   "app_id": "cli_...",

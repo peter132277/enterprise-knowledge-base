@@ -199,7 +199,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-results", type=int, default=8)
     parser.add_argument(
         "--backend",
-        choices=("auto", "obsidian-cli", "rg"),
+        choices=("auto", "rg", "python"),
         default="auto",
     )
     return parser

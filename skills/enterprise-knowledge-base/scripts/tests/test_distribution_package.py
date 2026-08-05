@@ -32,6 +32,11 @@ class DistributionPackageTests(unittest.TestCase):
             self.assertFalse(any("__pycache__" in name for name in names))
             self.assertFalse(any(name.startswith(".github/") for name in names))
             self.assertFalse(any(name.endswith((".db", ".sqlite", ".pyc")) for name in names))
+            self.assertFalse(any(name == "README.md" or name.startswith("docs/") for name in names))
+            self.assertEqual(
+                {name.split("/", 1)[0] for name in names},
+                {".codex-plugin", "assets", "skills"},
+            )
             self.assertIn("assets/vault-template/AGENTS.md", names)
 
     def test_extracted_distribution_can_initialize_a_new_vault(self) -> None:
@@ -40,6 +45,7 @@ class DistributionPackageTests(unittest.TestCase):
             package = root / "plugin.zip"
             extracted = root / "plugin"
             vault = root / "知识库"
+            vault.mkdir()
             PACKAGE.build(package)
             with zipfile.ZipFile(package) as archive:
                 archive.extractall(extracted)
@@ -50,13 +56,12 @@ class DistributionPackageTests(unittest.TestCase):
                     "-X",
                     "utf8",
                     str(setup),
-                    "initialize",
-                    "--vault",
-                    str(vault),
+                    "initialize-current-project",
                     "--role",
                     "local",
+                    "--yes",
                 ],
-                cwd=extracted,
+                cwd=vault,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",

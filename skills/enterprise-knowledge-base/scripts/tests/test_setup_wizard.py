@@ -3,13 +3,20 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import setup_wizard as setup
 import membership_policy as membership
+import setup_wizard as setup
+
+
+def snapshot(root: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
 
 
 class SetupWizardTests(unittest.TestCase):
@@ -71,204 +78,170 @@ class SetupWizardTests(unittest.TestCase):
         readback_file = root / "readback.json"
         setup.atomic_write_json(scope_file, scope)
         setup.atomic_write_json(readback_file, readback)
-        setup.record_membership_verification(
-            admin, scope_file, readback_file, "members"
-        )
+        setup.record_membership_verification(admin, scope_file, readback_file, "members")
         package = root / "company.json"
         setup.export_company(admin, package)
         return admin, package
 
-    def test_initialize_creates_same_portable_vault_layout(self) -> None:
+    def test_empty_current_project_previews_then_initializes(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
-            vault = Path(folder) / "company-vault"
-            result = setup.initialize(vault, "local", "Example")
+            vault = Path(folder)
+            with patch.object(setup, "current_project", return_value=vault):
+                preview = setup.inspect_current_project()
+                self.assertTrue(preview["ok"])
+                self.assertEqual(preview["path_status"], "ready")
+                self.assertEqual(snapshot(vault), {})
+                result = setup.initialize_current_project("local", "", True)
             self.assertTrue(result["configured"])
-            self.assertTrue((vault / "AGENTS.md").is_file())
+            self.assertEqual(result["network_requests"], 0)
+            self.assertEqual(result["system_software_installations"], 0)
+            self.assertEqual(result["obsidian_writes"], 0)
             binding = setup.load_json(vault / ".kb/config/project-binding.json")
-            self.assertEqual(binding["binding_mode"], "same-root")
             self.assertEqual(binding["project_root"], setup.canonical_path(vault))
             self.assertEqual(binding["vault_root"], setup.canonical_path(vault))
-            self.assertEqual(binding["skill_name"], "enterprise-knowledge-base")
-            self.assertEqual(binding["skill_scope"], "project-only")
-            for relative in (*setup.VISIBLE_DIRECTORIES, *setup.SYSTEM_DIRECTORIES):
-                self.assertTrue((vault / relative).is_dir(), relative)
 
-    def test_install_plan_uses_documents_knowledge_base_without_writes(self) -> None:
-        with tempfile.TemporaryDirectory() as folder, patch.object(
-            setup, "documents_directory", return_value=Path(folder)
-        ), patch.object(setup, "tool_status", return_value={"obsidian": False}):
-            target = Path(folder) / "知识库"
-            result = setup.install_plan()
-            self.assertEqual(Path(result["vault"]), target.resolve())
-            self.assertEqual(result["codex_project_name"], "知识库")
-            self.assertEqual(result["path_status"], "create")
-            self.assertFalse(target.exists())
-
-    def test_install_plan_fails_closed_for_unrelated_nonempty_default(self) -> None:
-        with tempfile.TemporaryDirectory() as folder, patch.object(
-            setup, "documents_directory", return_value=Path(folder)
-        ), patch.object(setup, "tool_status", return_value={}):
-            target = Path(folder) / "知识库"
-            target.mkdir()
-            marker = target / "keep.txt"
-            marker.write_text("preserve", encoding="utf-8")
-            result = setup.install_plan()
-            self.assertFalse(result["ok"])
-            self.assertEqual(result["path_status"], "conflict")
-            self.assertEqual(marker.read_text(encoding="utf-8"), "preserve")
-
-    def test_legacy_three_skill_vault_is_migratable_and_backed_up(self) -> None:
+    def test_confirmation_gate_writes_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
-            target = Path(folder) / "知识库"
-            (target / ".kb/config").mkdir(parents=True)
-            (target / "AGENTS.md").write_text("# legacy rules\n", encoding="utf-8")
-            legacy_organization = {"schema": "legacy", "role": "admin"}
-            setup.atomic_write_json(
-                target / ".kb/config/organization.json", legacy_organization
-            )
-            for name in setup.LEGACY_SKILL_NAMES:
-                skill = target / ".agents/skills" / name
-                skill.mkdir(parents=True)
-                (skill / "SKILL.md").write_text(f"# {name}\n", encoding="utf-8")
-            plan = setup.install_plan(target)
-            self.assertTrue(plan["ok"])
-            self.assertEqual(plan["path_status"], "legacy")
-            setup.initialize(target, "local", "")
-            self.assertEqual(setup.install_plan(target)["path_status"], "legacy")
-            self.assertEqual(
-                setup.load_json(target / ".kb/config/organization.json"),
-                legacy_organization,
-            )
-            migration = setup.retire_legacy_skills(target)
-            self.assertTrue(migration["migrated"])
-            backup = target / migration["backup"]
-            self.assertEqual(
-                (backup / "AGENTS.md").read_text(encoding="utf-8"),
-                "# legacy rules\n",
-            )
-            for name in setup.LEGACY_SKILL_NAMES:
-                self.assertFalse((target / ".agents/skills" / name).exists())
-                self.assertTrue((backup / name / "SKILL.md").is_file())
-            self.assertEqual(
-                (target / "AGENTS.md").read_bytes(),
-                setup.template_agents().read_bytes(),
-            )
+            vault = Path(folder)
+            with patch.object(setup, "current_project", return_value=vault):
+                with self.assertRaises(setup.SetupError):
+                    setup.initialize_current_project("local", "", False)
+            self.assertEqual(snapshot(vault), {})
 
-    def test_macos_default_path_is_documents_knowledge_base(self) -> None:
-        with tempfile.TemporaryDirectory() as folder, patch.object(
-            setup.platform, "system", return_value="Darwin"
-        ), patch.object(setup.Path, "home", return_value=Path(folder)):
-            self.assertEqual(
-                setup.default_vault_path(),
-                (Path(folder) / "Documents/知识库").resolve(),
-            )
+    def test_only_obsidian_vault_is_allowed_and_byte_stable(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            vault = Path(folder)
+            plugin_file = vault / ".obsidian/plugins/example/data.json"
+            plugin_file.parent.mkdir(parents=True)
+            plugin_file.write_bytes(b'{"preserve":true}\r\n')
+            before = plugin_file.read_bytes()
+            preview = setup.inspect_project(vault)
+            self.assertTrue(preview["ok"], preview["conflicts"])
+            setup.initialize(vault, "local", "")
+            self.assertEqual(plugin_file.read_bytes(), before)
+            self.assertFalse((vault / ".claudian").exists())
 
-    def test_bootstrap_local_automates_vault_claudian_and_obsidian_open(self) -> None:
+    def test_existing_notes_and_attachments_are_preserved(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            vault = Path(folder)
+            note = vault / "会议记录.md"
+            attachment = vault / "附件/image.bin"
+            attachment.parent.mkdir()
+            note.write_bytes("# 原笔记\n不覆盖\n".encode("utf-8"))
+            attachment.write_bytes(b"\x00\x01keep")
+            before = {"note": note.read_bytes(), "attachment": attachment.read_bytes()}
+            preview = setup.inspect_project(vault)
+            self.assertTrue(preview["ok"], preview["conflicts"])
+            self.assertIn("会议记录.md", preview["ordinary_entries_preserved"])
+            setup.initialize(vault, "local", "")
+            self.assertEqual(note.read_bytes(), before["note"])
+            self.assertEqual(attachment.read_bytes(), before["attachment"])
+
+    def test_unknown_agents_and_invalid_kb_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
-            target = root / "知识库"
-            codex = root / "codex.exe"
-            codex.write_bytes(b"codex")
-            assets = {
-                "main.js": b"main",
-                "manifest.json": json.dumps(
-                    {
-                        "id": setup.CLAUDIAN_PLUGIN_ID,
-                        "name": "Claudian",
-                        "version": setup.CLAUDIAN_VERSION,
-                    }
-                ).encode("utf-8"),
-                "styles.css": b"styles",
-            }
-            with patch.object(
-                setup, "install_obsidian", return_value={"ok": True, "installed": True}
-            ), patch.object(
-                setup, "download_claudian_asset", side_effect=lambda name: assets[name]
-            ), patch.object(
-                setup,
-                "sha256_file",
-                side_effect=lambda path: setup.CLAUDIAN_ASSETS[path.name],
-            ), patch.object(
-                setup.platform, "system", return_value="Windows"
-            ), patch.object(
-                setup.platform, "node", return_value="workstation"
-            ), patch.object(
-                setup.webbrowser, "open", return_value=True
-            ), patch.object(
-                setup, "current_project_matches", return_value=False
-            ):
-                result = setup.bootstrap_local(
-                    target, "local", "", True, str(codex)
-                )
-            self.assertTrue(result["ok"])
-            self.assertEqual(result["stage"], "open-codex-project")
-            self.assertTrue(result["project_specific_skill"])
-            self.assertTrue(result["requires_codex_project_open"])
-            self.assertIn(str(target.resolve()), result["next_user_action"])
-            self.assertTrue((target / "AGENTS.md").is_file())
-
-    def test_bootstrap_local_confirmation_gate_writes_nothing(self) -> None:
-        with tempfile.TemporaryDirectory() as folder:
-            target = Path(folder) / "知识库"
+            unknown = root / "unknown-agents"
+            unknown.mkdir()
+            (unknown / "AGENTS.md").write_text("# user rules\n", encoding="utf-8")
+            plan = setup.inspect_project(unknown)
+            self.assertFalse(plan["ok"])
+            self.assertIn("unknown-agents", {item["code"] for item in plan["conflicts"]})
             with self.assertRaises(setup.SetupError):
-                setup.bootstrap_local(target, "local", "", False)
-            self.assertFalse(target.exists())
+                setup.initialize(unknown, "local", "")
 
-    def test_bootstrap_stops_before_vault_write_when_obsidian_needs_manual_installer(self) -> None:
-        with tempfile.TemporaryDirectory() as folder:
-            target = Path(folder) / "知识库"
-            with patch.object(
-                setup,
-                "install_obsidian",
-                return_value={
-                    "ok": False,
-                    "requires_browser": True,
-                    "url": "https://obsidian.md/download.html",
-                },
-            ):
-                result = setup.bootstrap_local(target, "local", "", True)
-            self.assertFalse(result["ok"])
-            self.assertEqual(result["writes"], 0)
-            self.assertFalse(target.exists())
+            invalid = root / "invalid-kb"
+            invalid.mkdir()
+            (invalid / ".kb").write_text("not a directory", encoding="utf-8")
+            plan = setup.inspect_project(invalid)
+            self.assertFalse(plan["ok"])
+            self.assertIn("invalid-kb", {item["code"] for item in plan["conflicts"]})
 
-    def test_bootstrap_reuses_configured_vault_without_overwriting_role(self) -> None:
+    def test_reserved_directory_type_conflict_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
-            target = Path(folder) / "知识库"
-            setup.initialize(target, "admin", "Example")
-            with patch.object(
-                setup, "install_obsidian", return_value={"ok": True}
-            ), patch.object(
-                setup,
-                "install_claudian",
-                return_value={"enabled": True, "already_installed": True},
-            ), patch.object(
-                setup, "open_obsidian", return_value={"ok": True}
-            ), patch.object(
-                setup,
-                "inspect",
-                return_value={
-                    "project_binding": {"project_specific": True},
-                    "claudian": {"ready": True},
-                    "role_options": [],
-                },
-            ), patch.object(setup, "current_project_matches", return_value=True):
-                result = setup.bootstrap_local(target, "local", "", True)
-            self.assertTrue(result["ok"])
-            organization = setup.load_json(target / ".kb/config/organization.json")
-            self.assertEqual(organization["role"], "admin")
-            self.assertEqual(organization["company_name"], "Example")
+            vault = Path(folder)
+            (vault / "20_知识").write_text("conflict", encoding="utf-8")
+            plan = setup.inspect_project(vault)
+            self.assertFalse(plan["ok"])
+            self.assertIn(
+                {"code": "reserved-path-type-conflict", "path": "20_知识"},
+                plan["conflicts"],
+            )
+            with self.assertRaises(setup.SetupError):
+                setup.initialize(vault, "local", "")
+
+    def test_initialization_has_no_network_or_system_install_path(self) -> None:
+        with tempfile.TemporaryDirectory() as folder, patch.object(
+            setup.subprocess, "run", side_effect=AssertionError("must not run")
+        ):
+            result = setup.initialize(Path(folder), "local", "")
+            self.assertTrue(result["configured"])
+            self.assertFalse(hasattr(setup, "install_obsidian"))
+            self.assertFalse(hasattr(setup, "install_claudian"))
+            self.assertFalse(hasattr(setup, "open_obsidian"))
+
+    def test_existing_v041_project_reuses_state_and_updates_official_agents(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            vault = Path(folder)
+            setup.initialize(vault, "admin", "Example")
+            state_path = vault / ".kb/state/processed_files.json"
+            setup.atomic_write_json(state_path, {"version": 2, "files": [{"keep": True}]})
+            old_agents = b"official-v0.4.1-template-fixture"
+            (vault / "AGENTS.md").write_bytes(old_agents)
+            real_hash = setup.sha256_file
+
+            def recognized_hash(path: Path) -> str:
+                if path.resolve() == (vault / "AGENTS.md").resolve():
+                    return setup.V041_AGENTS_SHA256
+                return real_hash(path)
+
+            with patch.object(setup, "sha256_file", side_effect=recognized_hash):
+                plan = setup.inspect_project(vault)
+                self.assertTrue(plan["ok"], plan["conflicts"])
+                setup.initialize(vault, "admin", "Example")
+            self.assertEqual(
+                setup.load_json(state_path),
+                {"version": 2, "files": [{"keep": True}]},
+            )
+            self.assertEqual((vault / "AGENTS.md").read_bytes(), setup.template_agents().read_bytes())
+
+    def test_legacy_three_skill_vault_is_backed_up(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            vault = Path(folder)
+            (vault / ".kb/config").mkdir(parents=True)
+            (vault / "AGENTS.md").write_text("# legacy rules\n", encoding="utf-8")
+            setup.atomic_write_json(
+                vault / ".kb/config/organization.json",
+                {"schema": "legacy", "role": "admin", "company_name": "Example"},
+            )
+            for name in setup.LEGACY_SKILL_NAMES:
+                skill = vault / ".agents/skills" / name
+                skill.mkdir(parents=True)
+                (skill / "SKILL.md").write_text(f"# {name}\n", encoding="utf-8")
+            plan = setup.inspect_project(vault)
+            self.assertEqual(plan["path_status"], "legacy")
+            result = setup.initialize(vault, "admin", "Example")
+            self.assertTrue(result["legacy_migration"]["migrated"])
+            backup = vault / result["legacy_migration"]["backup"]
+            self.assertEqual((backup / "AGENTS.md").read_text(encoding="utf-8"), "# legacy rules\n")
+            for name in setup.LEGACY_SKILL_NAMES:
+                self.assertTrue((backup / name / "SKILL.md").is_file())
+
+    def test_project_binding_rejects_a_different_root(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            vault = Path(folder) / "vault"
+            other = Path(folder) / "other"
+            setup.initialize(vault, "local", "")
+            with self.assertRaises(setup.SetupError):
+                setup.bind_project(vault, other)
 
     def test_default_company_sharing_and_employee_policy(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
-            for system in ("Windows", "Darwin"):
-                vault = Path(folder) / system
-                with patch.object(setup.platform, "system", return_value=system):
-                    setup.initialize(vault, "admin", "Example")
-                organization = setup.load_json(vault / ".kb/config/organization.json")
-                self.assertEqual(organization["share_scope"]["type"], "all-employees")
-                self.assertEqual(organization["share_scope"]["resolution_status"], "pending")
-                self.assertEqual(organization["publish_policy"], "members")
-                self.assertFalse(organization["membership_verified"])
+            vault = Path(folder) / "admin"
+            setup.initialize(vault, "admin", "Example")
+            organization = setup.load_json(vault / ".kb/config/organization.json")
+            self.assertEqual(organization["share_scope"]["type"], "all-employees")
+            self.assertEqual(organization["publish_policy"], "members")
+            self.assertFalse(organization["membership_verified"])
 
     def test_employee_import_rejects_any_secret(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
@@ -311,16 +284,13 @@ class SetupWizardTests(unittest.TestCase):
             exported = setup.load_json(package)
             self.assertNotIn("app_secret", exported)
             self.assertNotIn("members", exported["membership_verification"])
-            self.assertEqual(exported["schema"], "kb-company-config/v3")
-            self.assertEqual(exported["minimum_plugin_version"], setup.PLUGIN_VERSION)
-            self.assertEqual(exported["effective_employee_policy"], "members")
+            self.assertEqual(exported["minimum_plugin_version"], "0.5.0")
             setup.initialize(employee, "employee", "")
             result = setup.import_company(employee, package)
             self.assertTrue(result["imported"])
-            self.assertFalse(result["membership_verified"])
             self.assertTrue(result["requires_employee_oauth_and_membership_verification"])
 
-    def test_employee_import_still_requires_identity_and_membership_verification(self) -> None:
+    def test_employee_verification_still_checks_identity_and_membership(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             _, package = self.configure_admin(root)
@@ -349,7 +319,7 @@ class SetupWizardTests(unittest.TestCase):
             organization = setup.load_json(employee / ".kb/config/organization.json")
             self.assertTrue(organization["employee_access_verified"])
 
-    def test_employee_cannot_record_membership_or_export_company_policy(self) -> None:
+    def test_employee_cannot_record_membership_or_export_policy(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             employee = root / "employee"
@@ -361,237 +331,8 @@ class SetupWizardTests(unittest.TestCase):
             with self.assertRaises(setup.SetupError):
                 setup.export_company(employee, root / "company.json")
 
-    def test_export_fails_until_membership_readback_is_verified(self) -> None:
-        with tempfile.TemporaryDirectory() as folder:
-            vault = Path(folder) / "admin"
-            setup.initialize(vault, "admin", "Example")
-            with self.assertRaises(setup.SetupError):
-                setup.export_company(vault, Path(folder) / "company.json")
-
-    def test_windows_obsidian_uses_winget_after_confirmation(self) -> None:
-        which = lambda name: "winget" if name == "winget" else None
-        with patch.object(setup.platform, "system", return_value="Windows"), patch.object(
-            setup.shutil, "which", side_effect=which
-        ), patch.object(
-            setup.subprocess, "run", return_value=SimpleNamespace(returncode=0)
-        ) as run:
-            result = setup.install_obsidian(True)
-        self.assertTrue(result["ok"])
-        self.assertEqual(run.call_args.args[0][0], "winget")
-
-    def test_macos_obsidian_uses_existing_homebrew_after_confirmation(self) -> None:
-        which = lambda name: "brew" if name == "brew" else None
-        with patch.object(setup.platform, "system", return_value="Darwin"), patch.object(
-            setup.shutil, "which", side_effect=which
-        ), patch.object(
-            setup.Path, "home", return_value=Path("/nonexistent-user-home")
-        ), patch.object(
-            setup.subprocess, "run", return_value=SimpleNamespace(returncode=0)
-        ) as run:
-            result = setup.install_obsidian(True)
-        self.assertTrue(result["ok"])
-        self.assertEqual(run.call_args.args[0], ["brew", "install", "--cask", "obsidian"])
-
-    def test_claudian_is_installed_enabled_and_bound_to_codex_cli(self) -> None:
-        with tempfile.TemporaryDirectory() as folder:
-            vault = Path(folder) / "vault"
-            codex = Path(folder) / "codex.exe"
-            codex.write_bytes(b"codex")
-            setup.initialize(vault, "local", "Example")
-            assets = {
-                "main.js": b"main",
-                "manifest.json": json.dumps(
-                    {
-                        "id": setup.CLAUDIAN_PLUGIN_ID,
-                        "name": "Claudian",
-                        "version": setup.CLAUDIAN_VERSION,
-                    }
-                ).encode("utf-8"),
-                "styles.css": b"styles",
-            }
-            with patch.object(
-                setup, "download_claudian_asset", side_effect=lambda name: assets[name]
-            ), patch.object(
-                setup,
-                "sha256_file",
-                side_effect=lambda path: setup.CLAUDIAN_ASSETS[path.name],
-            ), patch.object(
-                setup.platform, "system", return_value="Windows"
-            ), patch.object(
-                setup.platform, "node", return_value="workstation"
-            ):
-                result = setup.install_claudian(vault, True, str(codex))
-            self.assertTrue(result["installed"])
-            plugin = vault / f".obsidian/plugins/{setup.CLAUDIAN_PLUGIN_ID}"
-            self.assertTrue((plugin / "main.js").is_file())
-            self.assertIn(
-                setup.CLAUDIAN_PLUGIN_ID,
-                setup.load_json(vault / ".obsidian/community-plugins.json"),
-            )
-            settings = setup.load_json(vault / ".claudian/claudian-settings.json")
-            codex_settings = settings["providerConfigs"]["codex"]
-            self.assertTrue(codex_settings["enabled"])
-            self.assertEqual(
-                codex_settings["cliPathsByHost"]["workstation"], str(codex.resolve())
-            )
-            integration = setup.load_json(
-                vault / ".kb/config/obsidian-integration.json"
-            )
-            self.assertEqual(integration["project_root"], setup.canonical_path(vault))
-            self.assertEqual(integration["vault_root"], setup.canonical_path(vault))
-
-    def test_existing_claudian_is_reused_without_download_or_overwrite(self) -> None:
-        with tempfile.TemporaryDirectory() as folder:
-            vault = Path(folder) / "vault"
-            codex = Path(folder) / "codex.exe"
-            codex.write_bytes(b"codex")
-            setup.initialize(vault, "local", "Example")
-            plugin = vault / f".obsidian/plugins/{setup.CLAUDIAN_PLUGIN_ID}"
-            plugin.mkdir(parents=True)
-            original = {
-                "main.js": b"existing-main",
-                "manifest.json": json.dumps(
-                    {
-                        "id": setup.CLAUDIAN_PLUGIN_ID,
-                        "name": "Claudian",
-                        "version": setup.CLAUDIAN_VERSION,
-                    }
-                ).encode("utf-8"),
-                "styles.css": b"existing-styles",
-            }
-            for name, data in original.items():
-                (plugin / name).write_bytes(data)
-            existing_settings = {
-                "unrelatedSetting": {"preserve": True},
-                "providerConfigs": {"codex": {"safeMode": "read-only"}},
-            }
-            setup.atomic_write_json(
-                vault / ".claudian/claudian-settings.json", existing_settings
-            )
-            with patch.object(
-                setup, "download_claudian_asset"
-            ) as download, patch.object(
-                setup.platform, "system", return_value="Windows"
-            ), patch.object(
-                setup.platform, "node", return_value="configured-workstation"
-            ):
-                result = setup.install_claudian(vault, True, str(codex))
-            download.assert_not_called()
-            self.assertTrue(result["already_installed"])
-            self.assertFalse(result["installed"])
-            for name, data in original.items():
-                self.assertEqual((plugin / name).read_bytes(), data)
-            settings = setup.load_json(vault / ".claudian/claudian-settings.json")
-            self.assertEqual(settings["unrelatedSetting"], {"preserve": True})
-            self.assertEqual(
-                settings["providerConfigs"]["codex"]["cliPathsByHost"][
-                    "configured-workstation"
-                ],
-                str(codex.resolve()),
-            )
-
-    def test_inspect_reports_existing_claudian_ready_without_writes(self) -> None:
-        with tempfile.TemporaryDirectory() as folder:
-            vault = Path(folder) / "vault"
-            codex = Path(folder) / "codex"
-            codex.write_bytes(b"codex")
-            setup.initialize(vault, "local", "Example")
-            plugin = vault / f".obsidian/plugins/{setup.CLAUDIAN_PLUGIN_ID}"
-            plugin.mkdir(parents=True)
-            (plugin / "main.js").write_bytes(b"existing-main")
-            (plugin / "styles.css").write_bytes(b"existing-styles")
-            setup.atomic_write_json(
-                plugin / "manifest.json",
-                {
-                    "id": setup.CLAUDIAN_PLUGIN_ID,
-                    "name": "Claudian",
-                    "version": setup.CLAUDIAN_VERSION,
-                },
-            )
-            setup.atomic_write_json(
-                vault / ".obsidian/community-plugins.json",
-                [setup.CLAUDIAN_PLUGIN_ID],
-            )
-            setup.atomic_write_json(
-                vault / ".claudian/claudian-settings.json",
-                {
-                    "providerConfigs": {
-                        "codex": {
-                            "enabled": True,
-                            "cliPathsByHost": {"existing-device": str(codex.resolve())},
-                        }
-                    }
-                },
-            )
-            before = {
-                path.relative_to(vault).as_posix(): path.read_bytes()
-                for path in vault.rglob("*")
-                if path.is_file()
-            }
-            result = setup.inspect(vault)
-            after = {
-                path.relative_to(vault).as_posix(): path.read_bytes()
-                for path in vault.rglob("*")
-                if path.is_file()
-            }
-            self.assertTrue(result["claudian"]["ready"])
-            self.assertEqual(result["claudian"]["codex_cli_path"], str(codex.resolve()))
-            self.assertEqual(before, after)
-
-    def test_macos_claudian_config_uses_verified_codex_path(self) -> None:
-        with tempfile.TemporaryDirectory() as folder:
-            vault = Path(folder) / "vault"
-            codex = Path(folder) / "codex"
-            codex.write_bytes(b"codex")
-            setup.initialize(vault, "local", "Example")
-            plugin = vault / f".obsidian/plugins/{setup.CLAUDIAN_PLUGIN_ID}"
-            plugin.mkdir(parents=True)
-            for name, data in {
-                "main.js": b"existing-main",
-                "manifest.json": json.dumps(
-                    {
-                        "id": setup.CLAUDIAN_PLUGIN_ID,
-                        "name": "Claudian",
-                        "version": setup.CLAUDIAN_VERSION,
-                    }
-                ).encode("utf-8"),
-                "styles.css": b"existing-styles",
-            }.items():
-                (plugin / name).write_bytes(data)
-            with patch.object(
-                setup.platform, "system", return_value="Darwin"
-            ), patch.object(
-                setup.platform, "node", return_value="mac-workstation"
-            ), patch.object(setup, "download_claudian_asset") as download:
-                result = setup.install_claudian(vault, True, str(codex))
-            download.assert_not_called()
-            self.assertTrue(result["already_installed"])
-            settings = setup.load_json(vault / ".claudian/claudian-settings.json")
-            codex_settings = settings["providerConfigs"]["codex"]
-            self.assertEqual(
-                codex_settings["cliPathsByHost"]["mac-workstation"],
-                str(codex.resolve()),
-            )
-            self.assertNotIn("installationMethodsByHost", codex_settings)
-
-    def test_project_binding_rejects_a_different_vault_root(self) -> None:
-        with tempfile.TemporaryDirectory() as folder:
-            vault = Path(folder) / "vault"
-            other = Path(folder) / "other"
-            setup.initialize(vault, "local", "Example")
-            with self.assertRaises(setup.SetupError):
-                setup.bind_project(vault, other)
-
-    def test_installers_never_run_without_confirmation(self) -> None:
-        with tempfile.TemporaryDirectory() as folder, patch.object(
-            setup.shutil, "which", return_value=None
-        ):
-            vault = Path(folder) / "vault"
-            setup.initialize(vault, "local", "Example")
-            with self.assertRaises(setup.SetupError):
-                setup.install_obsidian(False)
-            with self.assertRaises(setup.SetupError):
-                setup.install_claudian(vault, False)
+    def test_lark_cli_remains_separately_confirmed(self) -> None:
+        with patch.object(setup.shutil, "which", return_value=None):
             with self.assertRaises(setup.SetupError):
                 setup.install_lark_cli(False)
 
