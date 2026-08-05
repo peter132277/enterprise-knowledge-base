@@ -35,6 +35,7 @@ class PreparePublishTests(unittest.TestCase):
         note.write_text(
             """---
 title: 测试标题
+imported_at: "2026-08-05T10:00:00+08:00"
 status: ready-to-publish
 scope: enterprise
 sensitivity: internal
@@ -87,6 +88,23 @@ feishu_parent_node_name: 03｜流程与交付
             payload = Path(one["payload_path"]).read_text(encoding="utf-8")
             self.assertNotIn("# 测试标题", payload)
             self.assertIn("显示文字", payload)
+            self.assertIn("收录时间：`2026-08-05T10:00:00+08:00`", payload)
+            self.assertEqual(one["imported_at"], "2026-08-05T10:00:00+08:00")
+
+    def test_requires_timezone_aware_imported_at(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            vault = Path(folder)
+            note = self.make_vault(vault)
+            note.write_text(
+                note.read_text(encoding="utf-8").replace(
+                    'imported_at: "2026-08-05T10:00:00+08:00"',
+                    'imported_at: "2026-08-05T10:00:00"',
+                ),
+                encoding="utf-8",
+            )
+            result = self.run_prepare(vault, note)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("明确时区", result.stdout)
 
     def test_blocks_secret_and_local_attachment_before_publication(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

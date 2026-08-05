@@ -36,17 +36,27 @@ If `lark-cli` is absent for an administrator or employee flow, offer `安装飞�
 
 Offer `为本公司创建企业自建应用`, `连接已存在的企业应用`, or `安装跨企业正式版应用` without recommendation labels. Complete administrator OAuth in the in-app browser and never request or display the App Secret in chat.
 
-List spaces with user identity, select one exact private space, and build mappings only from re-read verified nodes. Application setup and OAuth do not grant space membership.
+After OAuth, offer exactly `新建飞书知识库` or `连接已有飞书知识库`; do not confuse this choice with creating a Feishu application.
 
-Resolve exactly one verified internal organization root representing `全公司内部员工`. Fix the Skill policy to `查询、收录并发布`, keep normal employees as `成员`, and keep external sharing closed. Missing, ambiguous, external, narrowed, or contradictory scope evidence fails closed.
+For `连接已有飞书知识库`, list every accessible space with user identity, select one exact private team space, and build mappings only from re-read verified nodes.
 
-Generate a readable member preview with no IDs, tokens, hashes, or secrets. Require exact fresh `确认更新知识空间成员`; otherwise write nothing. After the managed change, read the complete member list and verify scope, roles, internal-only membership, mapping, policy, and external-sharing state before recording completion or exporting company configuration.
+For `新建飞书知识库`, require only the missing user scopes `wiki:space:retrieve` and `wiki:space:write_only`; never broaden scopes automatically. Ask for a readable space name and optional description. Run `setup_wizard.py preview-space-create --vault . --name <name> [--description <text>]`, show its preview, and wait for exact `确认创建知识空间`. Only then run `setup_wizard.py apply-space-create --vault . --confirmation 确认创建知识空间`. Require administrator user OAuth, a private team-space response, closed external sharing, exact name/description, and complete space readback before recording the empty verified mapping. A failed or unknown create outcome must never be retried automatically.
 
-Export only `kb-company-config/v3` after read-back succeeds. Exclude App Secret, tokens, cookies, employee content, and full employee rosters.
+Knowledge-space creation never authorizes membership, node, publication, deletion, or sharing writes. Application setup and OAuth do not grant space membership. Space creation also grants no company membership.
+
+After a new space is verified, require only the missing user scopes `wiki:node:retrieve` and `wiki:node:create` for the packaged `Obsidian企业知识库` structure. Run `setup_wizard.py preview-wiki-template --vault .`, show all seven empty structural nodes, and wait for exact `确认初始化知识库模板`. Only then run `setup_wizard.py apply-wiki-template --vault . --confirmation 确认初始化知识库模板`. The template contains five numbered root pages plus `91｜数据索引` and `98｜同步记录` under `00｜知识库首页`; it contains no live IDs, business documents, sample content, publication, or member writes. Require an empty new space, stable administrator identity, per-node journal, complete recursive readback, and exact topology before recording verified node mappings. Recover an unknown node write only when fresh readback identifies exactly one matching pending node; otherwise fail closed without retry. Do not offer this initializer for a connected existing space.
+
+Template initialization never authorizes membership or publication. Only after its complete readback may the separate company-membership preview begin.
+
+Resolve and verify the internal organization root representing `全公司内部员工` first. When that root is unavailable or cannot be resolved uniquely, use the same foreground membership transaction to traverse the complete all-employees directory and manage only active, joined, non-frozen, non-resigned internal user principals. Incomplete pages, a narrowed directory scope, contradictory users, or an empty eligible roster fail closed. Never make the space public as fallback.
+
+Generate one readable member preview with strategy, eligible/excluded counts, and add/remove counts but no IDs, tokens, hashes, or secrets. Remove only principals recorded by a previous successful managed-user transaction; preserve manual members and every administrator. Require exact fresh `确认更新知识空间成员`; otherwise write nothing. Keep an unresolved receipt after a partial or unknown outcome, refuse a replacement preview, retry only the same immutable plan, and converge each operation by readback. After the managed change, read every member page and verify scope, roles, internal-only membership, mapping, policy, and closed external sharing.
+
+Export only `kb-company-config/v4` after readback succeeds. Exclude App Secret, tokens, cookies, employee content, exact managed IDs, and full employee rosters.
 
 ### Employee
 
-Import only a validated `kb-company-config/v3`. Reject secrets, tokens, cookies, executable content, employee content, full rosters, unsupported scopes, and policies other than `members` for all employees.
+Import only a validated `kb-company-config/v4`. Reject secrets, tokens, cookies, executable content, employee content, full rosters, unsupported strategies, and policies other than `members` for all employees.
 
 Complete OAuth with the employee's identity, then verify tenant, exact space, mappings, current membership version/hash, authorized scope, `成员` role, and effective policy. External, out-of-scope, invisible, stale, or contradictory evidence fails closed. After verification, run the existing first foreground company sync transaction; roll back completion if it fails.
 

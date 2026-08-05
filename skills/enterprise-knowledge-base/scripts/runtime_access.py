@@ -70,7 +70,7 @@ def authorize(vault: Path, action: str) -> dict[str, Any]:
 
     mapping = mapping_value(vault)
     mapping_hash = canonical_hash(mapping)
-    if not mapping["space_id"] or not mapping["nodes"]:
+    if not mapping["space_id"] or not isinstance(mapping["nodes"], list):
         raise AccessError("Verified company space mapping is missing.")
 
     if role == "admin":

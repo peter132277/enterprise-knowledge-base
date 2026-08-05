@@ -30,6 +30,7 @@ The only public script entries are `setup_wizard.py`, `query_answer_packet.py`, 
 - For a file, local path, public link, `收录`, `整理`, or saved text, read [capture-modes.md](references/capture-modes.md); read [adaptive-processing.md](references/adaptive-processing.md) only when needed. Never contact Feishu from the collection route.
 - For `发布到飞书`, create the immutable read-only preview immediately and ask once for `确认批量发布`.
 - Only exact `确认批量发布` authorizes the latest immutable batch. Never extend it to another batch, space, upload, deletion, or permission change.
+- For a failed publication read-back, load [publish-execution.md](references/publish-execution.md). Diagnose without writes, preview recovery in the same batch journal, and accept only exact `确认恢复本次发布`; never create another node or upload the original again.
 - For `检查知识库健康度`, use `check_vault_health.py` on the current bound Vault.
 
 ## Preserve local transaction boundaries
@@ -42,7 +43,9 @@ Default media to one explicitly confirmed Feishu Minutes transcription. Use an a
 
 Publish only reviewed enterprise notes. Show readable title, destination, and original upload/reuse status. Revalidate identity, mapping, inputs, parent, remote revision, source file, and read-back content. Stop on collisions, remote edits, wrong spaces, permission failures, or incomplete evidence. Use `execute_publish.py`; never reconstruct its lark-cli sequence.
 
-Keep knowledge-space membership separate from Skill policy. Resolve membership read-only, show a human preview, require fresh exact confirmation, apply only the managed member plan, then read every member page back. Keep normal employees as members, external sharing closed, and company policy fixed to query, collect, and publish.
+Keep knowledge-space membership separate from Skill policy. Prefer one verified organization-root grant; if it is unavailable, use the same foreground transaction to enumerate the complete all-employees directory and manage eligible internal users individually. Show strategy and add/remove counts, require fresh exact confirmation, remove only previously managed users, preserve manual members and administrators, and read every member page back. Keep normal employees as members, external sharing closed, and company policy fixed to `查询、收录并发布`. Never replace an unresolved receipt, make the space public, or add background reconciliation.
+
+During administrator Feishu setup, offer `新建飞书知识库` or `连接已有飞书知识库`. New-space creation requires its own preview, exact `确认创建知识空间`, administrator user OAuth, private/closed readback, and zero node/member writes. Then initialize the packaged seven-node `Obsidian企业知识库` structure only after a separate preview and exact `确认初始化知识库模板`; require complete topology readback and zero content/member writes before the separate membership confirmation.
 
 Treat lark-cli as a conditional dependency only when Feishu features are enabled. Do not contact Feishu during local initialization or ordinary local collection.
 
@@ -50,7 +53,7 @@ Treat lark-cli as a conditional dependency only when Feishu features are enabled
 
 Use `company_sync_coordinator.py before-query` once before the first all-knowledge query in each Codex task when company access is configured; use `initial-employee` after employee verification, `explicit` for user-requested sync, and local convergence for the publisher after verified publication. Reuse the verified task credential afterward with zero remote reads and no full-mirror rehash. No background push or polling is allowed.
 
-Never overwrite a locally edited mirror, accept a disappeared remote node, cross spaces, or sync unsupported nodes. Keep managed mirrors publication-excluded.
+Never overwrite a locally edited mirror, accept a disappeared remote node, cross spaces, or sync unsupported nodes. Name mirrors from portable Wiki document titles; add a stable hash only for duplicate titles, migrate verified legacy token filenames atomically, and keep every managed mirror publication-excluded.
 
 Keep personal knowledge purely local for every role. Require `scope: personal` and `publish_to_feishu: false`; block personal content from queue, preview, confirmation, executor, Drive, Wiki, mapping, shared mirror, and sync state at every layer.
 

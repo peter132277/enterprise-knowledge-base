@@ -8,6 +8,7 @@ import hashlib
 import json
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 
 
@@ -47,6 +48,19 @@ def scalar(frontmatter: str, key: str) -> str:
 
 def as_bool(value: str) -> bool:
     return value.strip().lower() in {"true", "yes", "1", "on"}
+
+
+def validate_imported_at(value: str) -> str:
+    timestamp = value.strip()
+    if not timestamp:
+        fail("缺少 imported_at；无法注明可信的首次收录时间。")
+    try:
+        parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except ValueError:
+        fail("imported_at 必须是 ISO 8601 时间。")
+    if parsed.utcoffset() is None:
+        fail("imported_at 必须包含明确时区。")
+    return timestamp
 
 
 def normalize_heading(value: str) -> str:
@@ -128,6 +142,7 @@ def main() -> None:
     publication_excluded = as_bool(scalar(frontmatter, "publication_excluded"))
     parent_name = scalar(frontmatter, "feishu_parent_node_name")
     writer = scalar(frontmatter, "feishu_writer") or "lark-cli"
+    imported_at = validate_imported_at(scalar(frontmatter, "imported_at"))
 
     if not title:
         fail("缺少 title。")
@@ -168,7 +183,7 @@ def main() -> None:
         fail("目标父节点不存在、未验证或映射不唯一。")
     parent = matches[0]
 
-    payload = convert_obsidian(body, title)
+    payload = f"> 收录时间：`{imported_at}`\n\n{convert_obsidian(body, title)}"
     check_secrets(payload)
     if "\ufffd" in payload:
         fail("正文包含 Unicode 替换字符，可能存在编码损坏。")
@@ -191,6 +206,7 @@ def main() -> None:
         "review_status": review_status,
         "publish_status": publish_status,
         "writer": writer,
+        "imported_at": imported_at,
         "space_name": space_name,
         "space_id": space_id,
         "parent_node_name": parent_name,

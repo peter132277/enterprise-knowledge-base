@@ -1,6 +1,6 @@
 {
   "name": "enterprise-knowledge-base",
-  "version": "0.5.0",
+  "version": "0.7.1",
   "description": "One-entry local Vault and confirmed Feishu enterprise knowledge workflow.",
   "author": {
     "name": "Enterprise Knowledge Base Team"

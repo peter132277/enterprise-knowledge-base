@@ -38,6 +38,9 @@ class DistributionPackageTests(unittest.TestCase):
                 {".codex-plugin", "assets", "skills"},
             )
             self.assertIn("assets/vault-template/AGENTS.md", names)
+            self.assertIn(
+                "skills/enterprise-knowledge-base/assets/wiki-template.json", names
+            )
 
     def test_extracted_distribution_can_initialize_a_new_vault(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

@@ -25,6 +25,13 @@ ORIGINAL_METADATA_RE = re.compile(
 )
 FEISHU_FILE_HOST_SUFFIXES = (".feishu.cn", ".larksuite.com")
 TABLE_SEPARATOR_RE = re.compile(r"^\|(?:[ \t]*:?-+:?[ \t]*\|)+$")
+FENCE_RE = re.compile(r"^[ \t]*(`{3,}|~{3,})[ \t]*([^`]*)$")
+HEADING_RE = re.compile(r"^[ \t]*(#{1,6})[ \t]+(.+?)#*[ \t]*$")
+LIST_RE = re.compile(
+    r"^([ \t]*)([-+*]|\d+[.)])[ \t]+(?:\[([ xX])\][ \t]+)?(.*)$"
+)
+BLOCKQUOTE_RE = re.compile(r"^[ \t]*(>+)[ \t]?(.*)$")
+HTML_RE = re.compile(r"<\/?[A-Za-z!][^>]*>")
 
 
 class SourceLinkError(RuntimeError):
@@ -177,13 +184,255 @@ def normalize_markdown_roundtrip(markdown: str) -> str:
     return "\n".join(normalized).strip()
 
 
+def _split_table_row(line: str) -> list[str]:
+    value = line.strip()
+    if value.startswith("|"):
+        value = value[1:]
+    if value.endswith("|") and not value.endswith(r"\|"):
+        value = value[:-1]
+    cells: list[str] = []
+    current: list[str] = []
+    escaped = False
+    for character in value:
+        if escaped:
+            current.append(character)
+            escaped = False
+        elif character == "\\":
+            current.append(character)
+            escaped = True
+        elif character == "|":
+            cells.append("".join(current).strip())
+            current = []
+        else:
+            current.append(character)
+    cells.append("".join(current).strip())
+    return cells
+
+
+def _is_table_separator(line: str) -> bool:
+    cells = _split_table_row(line)
+    return bool(cells) and all(re.fullmatch(r":?-{1,}:?", cell) for cell in cells)
+
+
+def _inline_semantics(value: str) -> tuple[str, bool]:
+    if HTML_RE.search(value):
+        return "", False
+    text = value
+    protected: list[str] = []
+
+    def protect(kind: str, body: str) -> str:
+        protected.append(f"{kind}:{body}")
+        return f"\x00{len(protected) - 1}\x00"
+
+    text = re.sub(
+        r"`([^`\n]+)`",
+        lambda match: protect("code", match.group(1)),
+        text,
+    )
+    text = re.sub(
+        r"!\[([^\]]*)\]\((https?://[^)\s]+)(?:[ \t]+[\"'][^\"']*[\"'])?\)",
+        lambda match: protect("image", f"{match.group(1)}|{match.group(2)}"),
+        text,
+    )
+    text = re.sub(
+        r"\[([^\]]+)\]\((https?://[^)\s]+)(?:[ \t]+[\"'][^\"']*[\"'])?\)",
+        lambda match: protect("link", f"{match.group(1)}|{match.group(2)}"),
+        text,
+    )
+    text = re.sub(
+        r"<(https?://[^>\s]+)>",
+        lambda match: protect("link", f"{match.group(1)}|{match.group(1)}"),
+        text,
+    )
+    text = re.sub(r"(?<!\\)(\*\*|__|~~)", "", text)
+    text = re.sub(r"(?<![\\\w])([*_])|([*_])(?!\w)", "", text)
+    text = re.sub(r"\\([\\`*_[\]{}()#+.!|>~-])", r"\1", text)
+    text = re.sub(r"[ \t\n]+", " ", text).strip()
+    text = re.sub(r"(?<=[\u3400-\u9fff]) (?=[\u3400-\u9fff])", "", text)
+    for index, item in enumerate(protected):
+        text = text.replace(f"\x00{index}\x00", f"<{item}>")
+    return text, True
+
+
+def semantic_markdown_model(markdown: str) -> dict[str, Any]:
+    """Build a conservative block model for format-independent readback checks."""
+    lines = normalize_markdown_roundtrip(without_source_section(markdown)).split("\n")
+    blocks: list[dict[str, Any]] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if not line.strip():
+            index += 1
+            continue
+        fence = FENCE_RE.match(line)
+        if fence:
+            marker = fence.group(1)
+            language = fence.group(2).strip().casefold()
+            body: list[str] = []
+            index += 1
+            while index < len(lines) and not re.match(
+                rf"^[ \t]*{re.escape(marker[0])}{{{len(marker)},}}[ \t]*$",
+                lines[index],
+            ):
+                body.append(lines[index])
+                index += 1
+            if index >= len(lines):
+                return {"supported": False, "reason": "unclosed-code-fence"}
+            blocks.append(
+                {
+                    "type": "code",
+                    "language": language,
+                    "content": "\n".join(body),
+                }
+            )
+            index += 1
+            continue
+        heading = HEADING_RE.match(line)
+        if heading:
+            text, supported = _inline_semantics(heading.group(2))
+            if not supported:
+                return {"supported": False, "reason": "html-in-heading"}
+            blocks.append(
+                {"type": "heading", "level": len(heading.group(1)), "text": text}
+            )
+            index += 1
+            continue
+        if index + 1 < len(lines) and re.fullmatch(r"[ \t]*(=+|-+)[ \t]*", lines[index + 1]):
+            text, supported = _inline_semantics(line)
+            if not supported:
+                return {"supported": False, "reason": "html-in-heading"}
+            blocks.append(
+                {
+                    "type": "heading",
+                    "level": 1 if "=" in lines[index + 1] else 2,
+                    "text": text,
+                }
+            )
+            index += 2
+            continue
+        if index + 1 < len(lines) and "|" in line and _is_table_separator(lines[index + 1]):
+            rows = [_split_table_row(line)]
+            index += 2
+            while index < len(lines) and "|" in lines[index] and lines[index].strip():
+                rows.append(_split_table_row(lines[index]))
+                index += 1
+            normalized_rows: list[list[str]] = []
+            width = len(rows[0])
+            for row in rows:
+                if len(row) != width:
+                    return {"supported": False, "reason": "ragged-table"}
+                normalized_row: list[str] = []
+                for cell in row:
+                    text, supported = _inline_semantics(cell)
+                    if not supported:
+                        return {"supported": False, "reason": "html-in-table"}
+                    normalized_row.append(text)
+                normalized_rows.append(normalized_row)
+            blocks.append({"type": "table", "rows": normalized_rows})
+            continue
+        item = LIST_RE.match(line)
+        if item:
+            text, supported = _inline_semantics(item.group(4))
+            if not supported:
+                return {"supported": False, "reason": "html-in-list"}
+            blocks.append(
+                {
+                    "type": "list-item",
+                    "depth": len(item.group(1).expandtabs(4)) // 2,
+                    "ordered": item.group(2)[0].isdigit(),
+                    "checked": (
+                        None
+                        if item.group(3) is None
+                        else item.group(3).casefold() == "x"
+                    ),
+                    "text": text,
+                }
+            )
+            index += 1
+            continue
+        quote = BLOCKQUOTE_RE.match(line)
+        if quote:
+            text, supported = _inline_semantics(quote.group(2))
+            if not supported:
+                return {"supported": False, "reason": "html-in-blockquote"}
+            blocks.append(
+                {"type": "blockquote", "depth": len(quote.group(1)), "text": text}
+            )
+            index += 1
+            continue
+        if re.fullmatch(r"[ \t]*([-*_])(?:[ \t]*\1){2,}[ \t]*", line):
+            blocks.append({"type": "thematic-break"})
+            index += 1
+            continue
+        paragraph = [line]
+        index += 1
+        while index < len(lines) and lines[index].strip():
+            candidate = lines[index]
+            if (
+                FENCE_RE.match(candidate)
+                or HEADING_RE.match(candidate)
+                or LIST_RE.match(candidate)
+                or BLOCKQUOTE_RE.match(candidate)
+                or (
+                    index + 1 < len(lines)
+                    and "|" in candidate
+                    and _is_table_separator(lines[index + 1])
+                )
+            ):
+                break
+            paragraph.append(candidate)
+            index += 1
+        text, supported = _inline_semantics("\n".join(paragraph))
+        if not supported:
+            return {"supported": False, "reason": "raw-html"}
+        blocks.append({"type": "paragraph", "text": text})
+    encoded = json.dumps(
+        blocks,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return {
+        "supported": True,
+        "blocks": blocks,
+        "hash": sha256_bytes(encoded),
+    }
+
+
 def compare_ignoring_source(expected: str, remote: str) -> dict[str, Any]:
     expected_core = normalize_markdown_roundtrip(without_source_section(expected))
     remote_core = normalize_markdown_roundtrip(without_source_section(remote))
+    strict_match = expected_core == remote_core
+    expected_semantic = semantic_markdown_model(expected)
+    remote_semantic = semantic_markdown_model(remote)
+    semantic_supported = bool(
+        expected_semantic.get("supported") and remote_semantic.get("supported")
+    )
+    semantic_match = bool(
+        semantic_supported
+        and expected_semantic.get("blocks") == remote_semantic.get("blocks")
+    )
+    if strict_match:
+        classification = "strict-match"
+    elif semantic_match:
+        classification = "format-only"
+    elif not semantic_supported:
+        classification = "unsupported-structure"
+    else:
+        classification = "semantic-content-difference"
     return {
-        "match": expected_core == remote_core,
+        "match": strict_match or semantic_match,
+        "strict_match": strict_match,
+        "semantic_match": semantic_match,
+        "semantic_supported": semantic_supported,
+        "classification": classification,
         "expected_core_hash": sha256_bytes(expected_core.encode("utf-8")),
         "remote_core_hash": sha256_bytes(remote_core.encode("utf-8")),
+        "expected_semantic_hash": str(expected_semantic.get("hash", "")),
+        "remote_semantic_hash": str(remote_semantic.get("hash", "")),
+        "unsupported_reason": str(
+            expected_semantic.get("reason") or remote_semantic.get("reason") or ""
+        ),
     }
 
 

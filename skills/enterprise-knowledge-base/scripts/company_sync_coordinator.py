@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import re
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -26,6 +29,14 @@ from vault_context import discover_vault
 
 
 MIRROR_ROOT = Path("20_知识/企业/共享镜像")
+WINDOWS_RESERVED_NAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{index}" for index in range(1, 10)),
+    *(f"LPT{index}" for index in range(1, 10)),
+}
 
 
 class CompanySyncError(RuntimeError):
@@ -41,6 +52,56 @@ def session_hash(session_id: str) -> str:
     if not value:
         raise CompanySyncError("A stable current-session identifier is required.")
     return sha256_bytes(value.encode("utf-8"))
+
+
+def safe_mirror_stem(title: str) -> str:
+    """Return a portable, readable filename stem derived from a Wiki title."""
+    value = unicodedata.normalize("NFC", title).strip()
+    if value.casefold().endswith(".md"):
+        value = value[:-3].rstrip()
+    value = "".join(
+        "-" if ord(character) < 32 or character in '<>:"/\\|?*' else character
+        for character in value
+    )
+    value = re.sub(r"\s+", " ", value).strip(" .")
+    value = re.sub(r"-{2,}", "-", value)
+    value = value[:120].rstrip(" .") or "未命名文档"
+    if value.upper() in WINDOWS_RESERVED_NAMES:
+        value = f"_{value}"
+    return value
+
+
+def mirror_paths(
+    remote_by_token: dict[str, dict[str, Any]],
+    authoritative: dict[str, str],
+) -> dict[str, str]:
+    """Assign stable title-based mirror paths; only duplicate titles gain a hash."""
+    stems = {
+        token: safe_mirror_stem(str(node.get("title", "")))
+        for token, node in remote_by_token.items()
+        if token not in authoritative
+    }
+    counts: dict[str, int] = {}
+    for stem in stems.values():
+        counts[stem.casefold()] = counts.get(stem.casefold(), 0) + 1
+    result: dict[str, str] = {}
+    used: set[str] = set()
+    for token in sorted(stems):
+        stem = stems[token]
+        if counts[stem.casefold()] > 1:
+            suffix = hashlib.sha256(token.encode("utf-8")).hexdigest()[:10]
+            stem = f"{stem} [{suffix}]"
+        filename = f"{stem}.md"
+        key = filename.casefold()
+        if key in used:
+            suffix = hashlib.sha256(token.encode("utf-8")).hexdigest()
+            filename = f"{stems[token]} [{suffix}].md"
+            key = filename.casefold()
+        if key in used:
+            raise CompanySyncError("Wiki titles cannot be mapped to unique mirror filenames.")
+        used.add(key)
+        result[token] = (MIRROR_ROOT / filename).as_posix()
+    return result
 
 
 def pull(
@@ -100,10 +161,18 @@ def pull(
         raise CompanySyncError("Remote Wiki nodes disappeared; manual review is required.")
 
     authoritative = local_authoritative_nodes(vault)
+    assigned_paths = mirror_paths(remote_by_token, authoritative)
+    owned_mirror_paths = {
+        str(record.get("local_path", "")).replace("\\", "/")
+        for record in records.values()
+        if isinstance(record, dict) and record.get("source") == "mirror"
+    }
     planned: dict[Path, bytes] = {}
     planned_tokens: dict[Path, str] = {}
+    stale_paths: set[Path] = set()
     next_records: dict[str, dict[str, Any]] = {}
     fetched_count = added_count = updated_count = unchanged_count = 0
+    renamed_count = 0
     skipped_local_count = 0
     for token in sorted(remote_by_token):
         node = remote_by_token[token]
@@ -125,31 +194,53 @@ def pull(
             }
             skipped_local_count += 1
             continue
-        relative = (MIRROR_ROOT / f"{token}.md").as_posix()
+        relative = assigned_paths[token]
         path = vault / Path(relative)
         previous = records.get(token, {}) if isinstance(records.get(token), dict) else {}
         if previous.get("source") == "mirror":
-            if not path.is_file() or not previous.get("file_sha256"):
-                raise CompanySyncError(f"Managed mirror is missing or unverified: {relative}")
-            stat = path.stat()
+            previous_relative = str(previous.get("local_path", "")).replace("\\", "/")
+            previous_path = vault / Path(previous_relative)
+            if not previous_path.is_file() or not previous.get("file_sha256"):
+                raise CompanySyncError(
+                    f"Managed mirror is missing or unverified: {previous_relative}"
+                )
+            stat = previous_path.stat()
             metadata_unchanged = (
                 previous.get("file_size") == stat.st_size
                 and previous.get("file_mtime_ns") == stat.st_mtime_ns
             )
-            if not metadata_unchanged and sha256_file(path) != previous["file_sha256"]:
-                raise CompanySyncError(f"Managed mirror was edited locally: {relative}")
+            if not metadata_unchanged and sha256_file(previous_path) != previous["file_sha256"]:
+                raise CompanySyncError(f"Managed mirror was edited locally: {previous_relative}")
             previous = {
                 **previous,
                 "file_size": stat.st_size,
                 "file_mtime_ns": stat.st_mtime_ns,
             }
+            if path != previous_path and path.exists() and relative not in owned_mirror_paths:
+                raise CompanySyncError(f"Mirror filename conflicts with a local file: {relative}")
+            if path != previous_path:
+                stale_paths.add(previous_path)
+        elif path.exists() and relative not in owned_mirror_paths:
+            raise CompanySyncError(f"Mirror filename conflicts with a local file: {relative}")
         if (
             previous.get("source") == "mirror"
             and previous.get("node_fingerprint") == fingerprint
-            and path.is_file()
         ):
-            next_records[token] = previous
-            unchanged_count += 1
+            previous_path = vault / Path(str(previous["local_path"]))
+            if previous_path == path:
+                next_records[token] = previous
+                unchanged_count += 1
+            else:
+                data = previous_path.read_bytes()
+                planned[path] = data
+                planned_tokens[path] = token
+                next_records[token] = {
+                    **previous,
+                    "local_path": relative,
+                    "file_size": len(data),
+                    "file_mtime_ns": 0,
+                }
+                renamed_count += 1
             continue
         fetched = reader.fetch_markdown(obj_token)
         data = mirror_bytes(node, fetched, space_id)
@@ -171,7 +262,17 @@ def pull(
         else:
             added_count += 1
 
-    backups = {path: path.read_bytes() if path.is_file() else None for path in planned}
+    target_paths = {
+        vault / Path(str(record["local_path"]))
+        for record in next_records.values()
+        if record.get("source") == "mirror"
+    }
+    delete_paths = stale_paths - target_paths
+    transaction_paths = set(planned) | delete_paths
+    backups = {
+        path: path.read_bytes() if path.is_file() else None
+        for path in transaction_paths
+    }
     state_backup = state_path.read_bytes() if state_path.is_file() else None
     next_state = {
         "schema": STATE_SCHEMA,
@@ -198,6 +299,8 @@ def pull(
             state_path,
             (json.dumps(next_state, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
         )
+        for path in delete_paths:
+            path.unlink(missing_ok=True)
     except OSError:
         for path, data in backups.items():
             if data is None:
@@ -217,6 +320,7 @@ def pull(
         "added": added_count,
         "updated": updated_count,
         "unchanged": unchanged_count,
+        "renamed": renamed_count,
         "local_authoritative": skipped_local_count,
         "manual_review": 0,
         "mirror_root": MIRROR_ROOT.as_posix(),

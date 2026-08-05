@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 import zipfile
+from datetime import datetime
 from pathlib import Path
 from unittest import mock
 
@@ -211,8 +212,19 @@ feishu_parent_node_name: "03｜流程与交付"
             PIPELINE.sha256_file(self.source),
             PIPELINE.sha256_file(self.vault / "10_来源/原件/文档/2026-07-28_sample.txt"),
         )
+        collected_note = self.vault / "20_知识/企业/03_业务流程/样本.md"
+        first_imported_at = PIPELINE.parse_frontmatter_text(
+            collected_note.read_text(encoding="utf-8")
+        )["imported_at"]
+        self.assertIsNotNone(datetime.fromisoformat(first_imported_at).utcoffset())
         second = PIPELINE.commit(self.vault, self.make_manifest(), consume=False)
         self.assertTrue(second["ok"])
+        self.assertEqual(
+            PIPELINE.parse_frontmatter_text(
+                collected_note.read_text(encoding="utf-8")
+            )["imported_at"],
+            first_imported_at,
+        )
         index_text = (self.vault / "30_导航/主题/企业主题/AI.md").read_text(encoding="utf-8")
         self.assertEqual(index_text.count("[[20_知识/企业/03_业务流程/样本]]"), 1)
 
@@ -229,6 +241,7 @@ feishu_parent_node_name: "03｜流程与交付"
             processed["files"][0]["source_path"],
             "10_来源/原件/文档/2026-07-28_sample.txt",
         )
+        self.assertEqual(processed["files"][0]["imported_at"], first_imported_at)
 
         (self.vault / ".kb/state/processed_files.json").write_text(
             '{"version":1,"files":[]}\n', encoding="utf-8"

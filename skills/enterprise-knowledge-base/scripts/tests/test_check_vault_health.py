@@ -29,11 +29,64 @@ class CheckVaultHealthTests(unittest.TestCase):
             healthy = HEALTH.check_company_sync(employee)
             self.assertEqual(healthy["records"], 1)
             self.assertEqual(healthy["errors"], [])
-            mirror = employee / coordinator.MIRROR_ROOT / "node-1.md"
+            self.assertEqual(
+                healthy["managed_mirror_paths"],
+                ["20_知识/企业/共享镜像/Policy.md"],
+            )
+            full_health = HEALTH.check(employee)
+            self.assertNotIn(
+                "20_知识/企业/共享镜像/Policy.md",
+                full_health["orphan_knowledge_notes"],
+            )
+            self.assertEqual(full_health["managed_mirror_notes"], 1)
+            mirror = employee / coordinator.MIRROR_ROOT / "Policy.md"
             mirror.write_text(mirror.read_text(encoding="utf-8") + "edited\n", encoding="utf-8")
             edited = HEALTH.check_company_sync(employee)
             self.assertEqual(edited["records"], 0)
             self.assertTrue(edited["errors"])
+
+    def test_only_marker_and_hash_verified_mirror_is_exempt_from_orphans(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            admin = configure_admin(root / "admin")
+            employee = configure_employee(admin, root / "employee")
+            coordinator.explicit_sync(employee, FakeKnowledgeReader())
+            unmanaged = employee / "20_知识/企业/普通企业笔记.md"
+            unmanaged.parent.mkdir(parents=True, exist_ok=True)
+            unmanaged.write_text("# 普通企业笔记\n", encoding="utf-8")
+            result = HEALTH.check(employee)
+            self.assertIn(
+                "20_知识/企业/普通企业笔记.md",
+                result["orphan_knowledge_notes"],
+            )
+            self.assertNotIn(
+                "20_知识/企业/共享镜像/Policy.md",
+                result["orphan_knowledge_notes"],
+            )
+
+            mirror = employee / coordinator.MIRROR_ROOT / "Policy.md"
+            mirror.write_text(
+                mirror.read_text(encoding="utf-8").replace(
+                    "managed_mirror: true", "managed_mirror: false"
+                ),
+                encoding="utf-8",
+            )
+            state_path = employee / ".kb/state/company_sync.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            record = state["records"]["node-1"]
+            record["file_sha256"] = coordinator.sha256_file(mirror)
+            record["file_size"] = mirror.stat().st_size
+            record["file_mtime_ns"] = mirror.stat().st_mtime_ns
+            coordinator.atomic_write(
+                state_path,
+                (json.dumps(state, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
+            )
+            damaged = HEALTH.check(employee)
+            self.assertIn(
+                "20_知识/企业/共享镜像/Policy.md",
+                damaged["orphan_knowledge_notes"],
+            )
+            self.assertTrue(damaged["company_sync_errors"])
 
     def test_external_web_corpus_links_are_not_local_link_errors(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

@@ -195,6 +195,73 @@ class SourceLinkTests(unittest.TestCase):
             SOURCE_LINK.compare_ignoring_source(expected, changed)["match"]
         )
 
+    def test_semantic_compare_classifies_format_only_changes(self) -> None:
+        expected = """# 标题
+
+**定位**客户需求。
+
+1. 第一步
+2. 第二步
+"""
+        remote = """# 标题
+
+定位客户需求。
+
+1) 第一步
+2) 第二步
+"""
+        comparison = SOURCE_LINK.compare_ignoring_source(expected, remote)
+        self.assertTrue(comparison["match"])
+        self.assertFalse(comparison["strict_match"])
+        self.assertTrue(comparison["semantic_match"])
+        self.assertEqual(comparison["classification"], "format-only")
+
+    def test_semantic_compare_preserves_meaningful_content_and_code(self) -> None:
+        expected = """# 标题
+
+客户需求。
+
+```python
+print("alpha")
+```
+"""
+        content_changed = expected.replace("客户需求", "渠道需求")
+        code_changed = expected.replace('print("alpha")', 'print("beta")')
+        self.assertEqual(
+            SOURCE_LINK.compare_ignoring_source(expected, content_changed)[
+                "classification"
+            ],
+            "semantic-content-difference",
+        )
+        self.assertFalse(
+            SOURCE_LINK.compare_ignoring_source(expected, code_changed)["match"]
+        )
+
+    def test_semantic_compare_fails_closed_for_raw_html(self) -> None:
+        expected = "# 标题\n\n正文"
+        remote = "# 标题\n\n<div>正文</div>"
+        comparison = SOURCE_LINK.compare_ignoring_source(expected, remote)
+        self.assertFalse(comparison["match"])
+        self.assertFalse(comparison["semantic_supported"])
+        self.assertEqual(comparison["classification"], "unsupported-structure")
+
+    def test_semantic_compare_does_not_flatten_table_structure(self) -> None:
+        expected = """# 标题
+
+| 产品 | 价格 |
+|---|---|
+| 课程 | 2980 |
+"""
+        reordered = """# 标题
+
+| 价格 | 产品 |
+|---|---|
+| 2980 | 课程 |
+"""
+        self.assertFalse(
+            SOURCE_LINK.compare_ignoring_source(expected, reordered)["match"]
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

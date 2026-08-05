@@ -376,15 +376,74 @@ def check_publish_state(vault: Path) -> dict[str, Any]:
 
 def check_company_sync(vault: Path) -> dict[str, Any]:
     if not (vault / ".kb/state/company_sync.json").is_file():
-        return {"records": 0, "errors": []}
+        return {"records": 0, "managed_mirror_paths": [], "errors": []}
     try:
         state = company_sync_coordinator.validate_local_state(
             vault,
             verify_file_hashes=True,
         )
     except RuntimeError as exc:
-        return {"records": 0, "errors": [str(exc)]}
-    return {"records": len(state.get("records", {})), "errors": []}
+        return {"records": 0, "managed_mirror_paths": [], "errors": [str(exc)]}
+
+    def scalar(value: str) -> Any:
+        text = value.strip()
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            return text
+
+    managed: list[str] = []
+    errors: list[dict[str, str]] = []
+    records = state.get("records", {})
+    for node_token, record in records.items():
+        if not isinstance(record, dict) or record.get("source") != "mirror":
+            continue
+        relative = str(record.get("local_path", "")).replace("\\", "/")
+        path = vault / Path(relative)
+        try:
+            lines = path.read_text(encoding="utf-8-sig").splitlines()
+        except (OSError, UnicodeError) as exc:
+            errors.append({"path": relative, "reason": str(exc)})
+            continue
+        fields: dict[str, Any] = {}
+        if not lines or lines[0].strip() != "---":
+            errors.append({"path": relative, "reason": "missing-managed-frontmatter"})
+            continue
+        for line in lines[1:]:
+            if line.strip() == "---":
+                break
+            if ":" in line:
+                key, value = line.split(":", 1)
+                fields[key.strip()] = scalar(value)
+        expected = {
+            "scope": "enterprise",
+            "publish_to_feishu": False,
+            "publication_excluded": True,
+            "managed_mirror": True,
+            "managed_by": "enterprise-knowledge-base",
+            "feishu_space_id": str(state.get("space_id", "")),
+            "feishu_node_token": str(node_token),
+            "feishu_obj_token": str(record.get("obj_token", "")),
+            "feishu_revision": str(record.get("revision_id", "")),
+        }
+        mismatches = [
+            key for key, value in expected.items() if fields.get(key) != value
+        ]
+        if mismatches:
+            errors.append(
+                {
+                    "path": relative,
+                    "reason": "managed-marker-mismatch",
+                    "fields": ",".join(mismatches),
+                }
+            )
+            continue
+        managed.append(relative)
+    return {
+        "records": len(records),
+        "managed_mirror_paths": sorted(managed),
+        "errors": errors,
+    }
 
 
 def resolve_link(vault: Path, files: list[Path], target: str) -> list[Path]:
@@ -452,11 +511,18 @@ def check(vault: Path) -> dict[str, Any]:
                     }
                 )
 
+    company_sync = check_company_sync(vault)
+    managed_mirrors = {
+        (vault / Path(relative)).resolve()
+        for relative in company_sync["managed_mirror_paths"]
+    }
     knowledge_root = (vault / "20_知识").resolve()
     orphan_notes = sorted(
         path.relative_to(vault).as_posix()
         for path in markdown
-        if path.resolve().is_relative_to(knowledge_root) and incoming[path.resolve()] == 0
+        if path.resolve().is_relative_to(knowledge_root)
+        and incoming[path.resolve()] == 0
+        and path.resolve() not in managed_mirrors
     )
 
     state_path = vault / ".kb" / "state" / "processed_files.json"
@@ -510,7 +576,6 @@ def check(vault: Path) -> dict[str, Any]:
     web_corpora = check_web_corpora(vault)
     document_collections = check_document_collections(vault)
     publish_state = check_publish_state(vault)
-    company_sync = check_company_sync(vault)
 
     ok = not any(
         (
@@ -553,6 +618,7 @@ def check(vault: Path) -> dict[str, Any]:
         "publication_not_applicable": publish_state.get("not_applicable", 0),
         "publish_state_errors": publish_state["errors"],
         "company_sync_records": company_sync["records"],
+        "managed_mirror_notes": len(company_sync["managed_mirror_paths"]),
         "company_sync_errors": company_sync["errors"],
         "web_corpus_count": web_corpora["count"],
         "web_corpus_files": web_corpora["files"],

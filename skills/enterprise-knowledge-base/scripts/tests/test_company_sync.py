@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import company_sync_coordinator as coordinator
+import query_answer_packet as query_packet
 import setup_wizard as setup
 sync = coordinator
 from company_test_support import (
@@ -36,7 +37,7 @@ class CompanySyncTests(unittest.TestCase):
             )
             self.assertEqual(result["initial_sync"]["trigger"], "employee-setup-complete")
             self.assertEqual(result["initial_sync"]["added"], 1)
-            self.assertTrue((employee / sync.MIRROR_ROOT / "node-1.md").is_file())
+            self.assertTrue((employee / sync.MIRROR_ROOT / "Policy.md").is_file())
 
     def test_failed_first_sync_rolls_back_employee_completion_and_writes_no_mirror(self) -> None:
         class BrokenReader(FakeKnowledgeReader):
@@ -96,7 +97,7 @@ class CompanySyncTests(unittest.TestCase):
             employee = configure_employee(admin, root / "employee")
             reader = FakeKnowledgeReader()
             coordinator.explicit_sync(employee, reader)
-            mirror = employee / coordinator.MIRROR_ROOT / "node-1.md"
+            mirror = employee / coordinator.MIRROR_ROOT / "Policy.md"
             state = json.loads(
                 (employee / ".kb/state/company_sync.json").read_text(encoding="utf-8")
             )
@@ -146,7 +147,7 @@ class CompanySyncTests(unittest.TestCase):
             employee = configure_employee(admin, root / "employee")
             reader = FakeKnowledgeReader()
             coordinator.explicit_sync(employee, reader)
-            mirror = employee / sync.MIRROR_ROOT / "node-1.md"
+            mirror = employee / sync.MIRROR_ROOT / "Policy.md"
             mirror.write_text(mirror.read_text(encoding="utf-8") + "edited\n", encoding="utf-8")
             with mock.patch.object(
                 coordinator, "atomic_write", wraps=coordinator.atomic_write
@@ -216,6 +217,143 @@ class CompanySyncTests(unittest.TestCase):
             result = coordinator.record_publisher_convergence(admin)
             self.assertEqual(result["converged"], 1)
             self.assertEqual((other / ".kb/state/company_sync.json").read_bytes(), other_before)
+
+    def test_mirror_uses_portable_document_title_and_migrates_legacy_token_name(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            admin = configure_admin(root / "admin")
+            employee = configure_employee(admin, root / "employee")
+            reader = FakeKnowledgeReader()
+            coordinator.explicit_sync(employee, reader)
+            titled = employee / coordinator.MIRROR_ROOT / "Policy.md"
+            self.assertTrue(titled.is_file())
+
+            legacy = employee / coordinator.MIRROR_ROOT / "node-1.md"
+            titled.rename(legacy)
+            state_path = employee / ".kb/state/company_sync.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            record = state["records"]["node-1"]
+            record["local_path"] = legacy.relative_to(employee).as_posix()
+            record["file_size"] = legacy.stat().st_size
+            record["file_mtime_ns"] = legacy.stat().st_mtime_ns
+            setup.atomic_write_json(state_path, state)
+            fetches_before = reader.fetch_calls
+
+            result = coordinator.explicit_sync(employee, reader)
+            self.assertEqual(result["renamed"], 1)
+            self.assertEqual(reader.fetch_calls, fetches_before)
+            self.assertTrue(titled.is_file())
+            self.assertFalse(legacy.exists())
+            migrated = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                migrated["records"]["node-1"]["local_path"],
+                "20_知识/企业/共享镜像/Policy.md",
+            )
+
+    def test_duplicate_and_invalid_titles_get_deterministic_readable_names(self) -> None:
+        nodes = [
+            {
+                "node_token": "node-a",
+                "obj_token": "doc-a",
+                "obj_type": "docx",
+                "title": "Policy",
+                "obj_edit_time": "1",
+                "has_child": False,
+            },
+            {
+                "node_token": "node-b",
+                "obj_token": "doc-b",
+                "obj_type": "docx",
+                "title": "Policy",
+                "obj_edit_time": "1",
+                "has_child": False,
+            },
+            {
+                "node_token": "node-c",
+                "obj_token": "doc-c",
+                "obj_type": "docx",
+                "title": "CON:流程/交付?",
+                "obj_edit_time": "1",
+                "has_child": False,
+            },
+        ]
+        paths = coordinator.mirror_paths(
+            {node["node_token"]: node for node in nodes},
+            {},
+        )
+        self.assertNotEqual(paths["node-a"].casefold(), paths["node-b"].casefold())
+        self.assertIn("Policy [", paths["node-a"])
+        self.assertIn("Policy [", paths["node-b"])
+        self.assertTrue(paths["node-c"].endswith("CON-流程-交付-.md"))
+        self.assertNotIn("node-a.md", paths.values())
+
+    def test_remote_title_change_atomically_moves_mirror(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            admin = configure_admin(root / "admin")
+            employee = configure_employee(admin, root / "employee")
+            reader = FakeKnowledgeReader()
+            coordinator.explicit_sync(employee, reader)
+            old = employee / coordinator.MIRROR_ROOT / "Policy.md"
+            reader.nodes[0]["title"] = "Employee Policy"
+            reader.nodes[0]["obj_edit_time"] = "2"
+            result = coordinator.explicit_sync(employee, reader)
+            self.assertEqual(result["updated"], 1)
+            self.assertFalse(old.exists())
+            self.assertTrue(
+                (employee / coordinator.MIRROR_ROOT / "Employee Policy.md").is_file()
+            )
+
+    def test_remote_change_syncs_into_local_mirror_and_same_task_query_reuses_it(self) -> None:
+        class ChangingReader(FakeKnowledgeReader):
+            def __init__(self) -> None:
+                super().__init__()
+                self.content = "初始公司内容。"
+
+            def fetch_markdown(self, doc_token: str):
+                self.fetch_calls += 1
+                return {
+                    "content": f"# Policy\n\n{self.content}",
+                    "revision_id": str(self.nodes[0]["obj_edit_time"]),
+                    "document_id": doc_token,
+                }
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            admin = configure_admin(root / "admin")
+            employee = configure_employee(admin, root / "employee")
+            reader = ChangingReader()
+            coordinator.explicit_sync(employee, reader)
+            reader.content = "量子成交 " * 8
+            reader.nodes[0]["obj_edit_time"] = "2"
+
+            first = query_packet.run_fast_query(
+                employee,
+                "量子成交",
+                backend="rg",
+                enforce_project=False,
+                session_id="sync-query-task",
+                sync_reader=reader,
+            )
+            mirror = employee / coordinator.MIRROR_ROOT / "Policy.md"
+            self.assertIn("量子成交", mirror.read_text(encoding="utf-8"))
+            self.assertEqual(first["sync"]["status"], "incremental")
+            self.assertEqual(first["results"][0]["path"], mirror.relative_to(employee).as_posix())
+            list_calls = reader.list_calls
+            fetch_calls = reader.fetch_calls
+
+            second = query_packet.run_fast_query(
+                employee,
+                "量子成交",
+                backend="rg",
+                enforce_project=False,
+                session_id="sync-query-task",
+                sync_reader=reader,
+            )
+            self.assertEqual(second["sync"]["status"], "reused-current-session")
+            self.assertEqual(second["sync"]["remote_reads"], 0)
+            self.assertEqual(reader.list_calls, list_calls)
+            self.assertEqual(reader.fetch_calls, fetch_calls)
 
 
 if __name__ == "__main__":

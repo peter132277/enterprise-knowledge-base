@@ -49,14 +49,14 @@ def configure_admin(vault: Path) -> Path:
         "schema": membership.MEMBERSHIP_READBACK_SCHEMA,
         "space_id": SPACE_ID,
         "remote_version": "version-9",
+        "complete": True,
         "external_sharing": False,
-        "bindings": [{"selector_id": "root-1", "role": "member", "internal": True}],
         "members": [
             {
-                "principal_hash": "c" * 64,
-                "role": "member",
+                "member_id": "root-1",
+                "member_type": "opendepartmentid",
+                "member_role": "member",
                 "internal": True,
-                "employee": True,
                 "deployer_admin": False,
             }
         ],

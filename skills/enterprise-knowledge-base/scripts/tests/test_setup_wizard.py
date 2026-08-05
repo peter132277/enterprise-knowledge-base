@@ -19,6 +19,95 @@ def snapshot(root: Path) -> dict[str, bytes]:
     }
 
 
+class FakeSpaceSetupAdapter:
+    def __init__(self) -> None:
+        self.identity = "a" * 64
+        self.spaces: list[dict[str, str]] = []
+        self.create_calls = 0
+        self.create_error = False
+        self.verify_failures = 0
+        self.nodes: list[dict[str, object]] = []
+        self.node_create_calls: list[dict[str, str]] = []
+        self.node_error_before_write_at = 0
+        self.node_error_after_write_at = 0
+        self.tree_calls = 0
+        self.tree_failure_at = 0
+
+    def current_user_principal_hash(self) -> str:
+        return self.identity
+
+    def list_spaces(self) -> list[dict[str, str]]:
+        return [dict(item) for item in self.spaces]
+
+    def create_space(self, name: str, description: str) -> dict[str, str]:
+        self.create_calls += 1
+        if self.create_error:
+            raise setup.CompanyAdapterError("transport failed")
+        created = {
+            "space_id": "456",
+            "name": name,
+            "description": description,
+            "space_type": "team",
+            "visibility": "private",
+            "open_sharing": "closed",
+        }
+        self.spaces.append(created)
+        return dict(created)
+
+    def verify_space(self, space_id: str) -> dict[str, str]:
+        if self.verify_failures:
+            self.verify_failures -= 1
+            raise setup.CompanyAdapterError("readback unavailable")
+        return dict(next(item for item in self.spaces if item["space_id"] == space_id))
+
+    def list_tree(self, space_id: str) -> list[dict[str, object]]:
+        self.tree_calls += 1
+        if self.tree_failure_at == self.tree_calls:
+            raise setup.CompanyAdapterError("tree readback unavailable")
+        return [dict(item) for item in self.nodes]
+
+    def create_node(
+        self,
+        space_id: str,
+        title: str,
+        parent_node_token: str = "",
+        obj_type: str = "docx",
+    ) -> dict[str, str]:
+        call_number = len(self.node_create_calls) + 1
+        call = {
+            "space_id": space_id,
+            "title": title,
+            "parent_node_token": parent_node_token,
+            "obj_type": obj_type,
+        }
+        self.node_create_calls.append(call)
+        if self.node_error_before_write_at == call_number:
+            raise setup.CompanyAdapterError("transport failed before observable write")
+        created = {
+            "space_id": space_id,
+            "node_token": f"node-{call_number}",
+            "obj_token": f"doc-{call_number}",
+            "obj_type": obj_type,
+            "title": title,
+            "parent_node_token": parent_node_token,
+            "has_child": False,
+        }
+        self.nodes.append(created)
+        if self.node_error_after_write_at == call_number:
+            self.node_error_after_write_at = 0
+            raise setup.CompanyAdapterError("transport failed after remote write")
+        return {
+            key: str(created[key])
+            for key in (
+                "node_token",
+                "obj_token",
+                "obj_type",
+                "title",
+                "parent_node_token",
+            )
+        }
+
+
 class SetupWizardTests(unittest.TestCase):
     def configure_admin(self, root: Path) -> tuple[Path, Path]:
         admin = root / "admin"
@@ -60,16 +149,14 @@ class SetupWizardTests(unittest.TestCase):
             "schema": membership.MEMBERSHIP_READBACK_SCHEMA,
             "space_id": "123",
             "remote_version": "version-9",
+            "complete": True,
             "external_sharing": False,
-            "bindings": [
-                {"selector_id": "root-1", "role": "member", "internal": True}
-            ],
             "members": [
                 {
-                    "principal_hash": "c" * 64,
-                    "role": "member",
+                    "member_id": "root-1",
+                    "member_type": "opendepartmentid",
+                    "member_role": "member",
                     "internal": True,
-                    "employee": True,
                     "deployer_admin": False,
                 }
             ],
@@ -243,6 +330,322 @@ class SetupWizardTests(unittest.TestCase):
             self.assertEqual(organization["publish_policy"], "members")
             self.assertFalse(organization["membership_verified"])
 
+    def test_admin_can_preview_create_and_read_back_private_space(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            vault = Path(folder) / "admin"
+            setup.initialize(vault, "admin", "Example")
+            adapter = FakeSpaceSetupAdapter()
+            preview = setup.preview_space_creation(
+                vault, "企业知识库", "公司共享知识", adapter
+            )
+            self.assertEqual(preview["confirmation"], "确认创建知识空间")
+            self.assertEqual(preview["remote_writes"], 0)
+            self.assertEqual(preview["preview"]["member_change"], "不包含；创建后单独预览和确认")
+            result = setup.apply_space_creation(
+                vault, "确认创建知识空间", adapter
+            )
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["remote_writes"], 1)
+            self.assertEqual(result["membership_writes"], 0)
+            self.assertEqual(result["next_confirmation"], "确认初始化知识库模板")
+            mapping = setup.load_json(vault / ".kb/mappings/feishu_nodes.json")
+            self.assertEqual(mapping["space_id"], "456")
+            self.assertEqual(mapping["space_name"], "企业知识库")
+            self.assertEqual(mapping["nodes"], [])
+            template_preview = setup.preview_wiki_template(vault, adapter)
+            self.assertEqual(template_preview["confirmation"], "确认初始化知识库模板")
+            self.assertEqual(template_preview["remote_writes"], 0)
+            self.assertEqual(template_preview["preview"]["node_count"], 7)
+            templated = setup.apply_wiki_template(
+                vault, "确认初始化知识库模板", adapter
+            )
+            self.assertEqual(templated["remote_writes"], 7)
+            self.assertEqual(templated["content_writes"], 0)
+            self.assertEqual(templated["membership_writes"], 0)
+            self.assertEqual(templated["next_confirmation"], "确认更新知识空间成员")
+            mapping = setup.load_json(vault / ".kb/mappings/feishu_nodes.json")
+            self.assertEqual(len(mapping["nodes"]), 7)
+            self.assertTrue(all(node["verified"] for node in mapping["nodes"]))
+            self.assertEqual(
+                adapter.node_create_calls[5]["parent_node_token"], "node-1"
+            )
+            repeated = setup.apply_space_creation(
+                vault, "确认创建知识空间", adapter
+            )
+            self.assertEqual(repeated["status"], "already_verified")
+            self.assertEqual(repeated["remote_writes"], 0)
+            self.assertEqual(adapter.create_calls, 1)
+            repeated_template = setup.apply_wiki_template(
+                vault, "确认初始化知识库模板", adapter
+            )
+            self.assertEqual(repeated_template["status"], "already_verified")
+            self.assertEqual(repeated_template["remote_writes"], 0)
+            self.assertEqual(len(adapter.node_create_calls), 7)
+
+    def test_space_create_requires_exact_confirmation_and_stable_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            vault = Path(folder) / "admin"
+            setup.initialize(vault, "admin", "Example")
+            adapter = FakeSpaceSetupAdapter()
+            setup.preview_space_creation(vault, "企业知识库", "", adapter)
+            refused = setup.apply_space_creation(vault, "可以创建", adapter)
+            self.assertFalse(refused["ok"])
+            self.assertEqual(refused["remote_writes"], 0)
+            self.assertEqual(adapter.create_calls, 0)
+            adapter.identity = "b" * 64
+            with self.assertRaises(setup.SetupError):
+                setup.apply_space_creation(vault, "确认创建知识空间", adapter)
+            self.assertEqual(adapter.create_calls, 0)
+
+    def test_fixed_wiki_template_has_only_portable_structure(self) -> None:
+        template = setup._load_wiki_template()
+        self.assertEqual(template["template_id"], "obsidian-enterprise-knowledge-base")
+        self.assertEqual(
+            [node["title"] for node in template["nodes"]],
+            [
+                "00｜知识库首页",
+                "01｜业务与产品",
+                "02｜客户与增长",
+                "03｜流程与交付",
+                "04｜经营与合规",
+                "91｜数据索引",
+                "98｜同步记录",
+            ],
+        )
+        encoded = json.dumps(template, ensure_ascii=False)
+        for forbidden in ("space_id", "node_token", "obj_token", "飞书同步测试"):
+            self.assertNotIn(forbidden, encoded)
+
+    def test_template_requires_separate_exact_confirmation_and_stable_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            vault = Path(folder) / "admin"
+            setup.initialize(vault, "admin", "Example")
+            adapter = FakeSpaceSetupAdapter()
+            setup.preview_space_creation(vault, "企业知识库", "", adapter)
+            setup.apply_space_creation(vault, "确认创建知识空间", adapter)
+            setup.preview_wiki_template(vault, adapter)
+            refused = setup.apply_wiki_template(vault, "可以初始化", adapter)
+            self.assertFalse(refused["ok"])
+            self.assertEqual(refused["remote_writes"], 0)
+            self.assertEqual(adapter.node_create_calls, [])
+            adapter.identity = "b" * 64
+            with self.assertRaises(setup.SetupError):
+                setup.apply_wiki_template(vault, "确认初始化知识库模板", adapter)
+            self.assertEqual(adapter.node_create_calls, [])
+
+    def test_template_preview_rejects_nonempty_or_connected_space(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            vault = root / "admin"
+            setup.initialize(vault, "admin", "Example")
+            adapter = FakeSpaceSetupAdapter()
+            setup.preview_space_creation(vault, "企业知识库", "", adapter)
+            setup.apply_space_creation(vault, "确认创建知识空间", adapter)
+            adapter.nodes.append(
+                {
+                    "space_id": "456",
+                    "node_token": "manual-node",
+                    "obj_token": "manual-doc",
+                    "obj_type": "docx",
+                    "title": "人工节点",
+                    "parent_node_token": "",
+                    "has_child": False,
+                }
+            )
+            with self.assertRaises(setup.SetupError):
+                setup.preview_wiki_template(vault, adapter)
+
+            connected = root / "connected"
+            setup.initialize(connected, "admin", "Example")
+            setup.atomic_write_json(
+                connected / ".kb/mappings/feishu_nodes.json",
+                {"version": 2, "space_name": "Existing", "space_id": "123", "nodes": []},
+            )
+            with self.assertRaises(setup.SetupError):
+                setup.preview_wiki_template(connected, adapter)
+
+    def test_template_recovers_unique_unknown_write_without_duplicate(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            vault = Path(folder) / "admin"
+            setup.initialize(vault, "admin", "Example")
+            adapter = FakeSpaceSetupAdapter()
+            setup.preview_space_creation(vault, "企业知识库", "", adapter)
+            setup.apply_space_creation(vault, "确认创建知识空间", adapter)
+            setup.preview_wiki_template(vault, adapter)
+            adapter.node_error_after_write_at = 3
+            with self.assertRaises(setup.SetupError):
+                setup.apply_wiki_template(vault, "确认初始化知识库模板", adapter)
+            receipt = setup.load_json(vault / ".kb/state/wiki-template-preview.json")
+            self.assertEqual(receipt["status"], "outcome_unknown")
+            recovered = setup.apply_wiki_template(
+                vault, "确认初始化知识库模板", adapter
+            )
+            self.assertTrue(recovered["recovered"])
+            self.assertEqual(len(adapter.node_create_calls), 7)
+            self.assertEqual(len(adapter.nodes), 7)
+
+    def test_template_unknown_no_write_fails_closed_without_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            vault = Path(folder) / "admin"
+            setup.initialize(vault, "admin", "Example")
+            adapter = FakeSpaceSetupAdapter()
+            setup.preview_space_creation(vault, "企业知识库", "", adapter)
+            setup.apply_space_creation(vault, "确认创建知识空间", adapter)
+            setup.preview_wiki_template(vault, adapter)
+            adapter.node_error_before_write_at = 2
+            with self.assertRaises(setup.SetupError):
+                setup.apply_wiki_template(vault, "确认初始化知识库模板", adapter)
+            with self.assertRaises(setup.SetupError):
+                setup.apply_wiki_template(vault, "确认初始化知识库模板", adapter)
+            self.assertEqual(len(adapter.node_create_calls), 2)
+            self.assertEqual(len(adapter.nodes), 1)
+
+    def test_template_final_readback_recovers_without_more_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            vault = Path(folder) / "admin"
+            setup.initialize(vault, "admin", "Example")
+            adapter = FakeSpaceSetupAdapter()
+            setup.preview_space_creation(vault, "企业知识库", "", adapter)
+            setup.apply_space_creation(vault, "确认创建知识空间", adapter)
+            setup.preview_wiki_template(vault, adapter)
+            adapter.tree_failure_at = 3
+            with self.assertRaises(setup.SetupError):
+                setup.apply_wiki_template(vault, "确认初始化知识库模板", adapter)
+            self.assertEqual(len(adapter.node_create_calls), 7)
+            recovered = setup.apply_wiki_template(
+                vault, "确认初始化知识库模板", adapter
+            )
+            self.assertEqual(recovered["remote_writes"], 0)
+            self.assertEqual(len(adapter.node_create_calls), 7)
+
+    def test_new_space_membership_waits_for_template_but_connected_space_does_not(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            vault = root / "new"
+            setup.initialize(vault, "admin", "Example")
+            adapter = FakeSpaceSetupAdapter()
+            setup.preview_space_creation(vault, "企业知识库", "", adapter)
+            setup.apply_space_creation(vault, "确认创建知识空间", adapter)
+            with self.assertRaises(setup.SetupError):
+                setup.preview_company_membership(vault, object())
+
+            connected = root / "connected"
+            setup.initialize(connected, "admin", "Example")
+            setup.atomic_write_json(
+                connected / ".kb/mappings/feishu_nodes.json",
+                {"version": 2, "space_name": "Existing", "space_id": "123", "nodes": []},
+            )
+            class PreviewAdapter:
+                def current_user_principal_hash(self) -> str:
+                    return "a" * 64
+                def prepare_membership_plan(self, previous: list[dict]) -> dict:
+                    return membership.build_membership_plan(
+                        "123",
+                        membership.resolve_share_scope(
+                            "all-employees",
+                            [{
+                                "kind": "organization-root",
+                                "selector_id": "root-1",
+                                "display_name": "全公司内部员工",
+                                "verified": True,
+                                "internal": True,
+                            }],
+                        ),
+                        "members",
+                    )
+            preview = setup.preview_company_membership(connected, PreviewAdapter())
+            self.assertTrue(preview["ok"])
+
+    def test_space_create_rejects_existing_exact_name_and_configured_mapping(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            vault = Path(folder) / "admin"
+            setup.initialize(vault, "admin", "Example")
+            adapter = FakeSpaceSetupAdapter()
+            adapter.spaces.append(
+                {
+                    "space_id": "123",
+                    "name": "企业知识库",
+                    "description": "existing",
+                    "space_type": "team",
+                    "visibility": "private",
+                    "open_sharing": "closed",
+                }
+            )
+            with self.assertRaises(setup.SetupError):
+                setup.preview_space_creation(vault, "企业知识库", "", adapter)
+            self.assertEqual(adapter.create_calls, 0)
+            setup.atomic_write_json(
+                vault / ".kb/mappings/feishu_nodes.json",
+                {"version": 2, "space_name": "Existing", "space_id": "123", "nodes": []},
+            )
+            with self.assertRaises(setup.SetupError):
+                setup.preview_space_creation(vault, "另一个知识库", "", adapter)
+
+    def test_space_preview_allows_other_public_spaces_but_preserves_unresolved_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            vault = Path(folder) / "admin"
+            setup.initialize(vault, "admin", "Example")
+            adapter = FakeSpaceSetupAdapter()
+            adapter.spaces.append(
+                {
+                    "space_id": "123",
+                    "name": "公开参考库",
+                    "description": "unrelated",
+                    "space_type": "team",
+                    "visibility": "public",
+                    "open_sharing": "open",
+                }
+            )
+            setup.preview_space_creation(vault, "企业知识库", "", adapter)
+            receipt_path = vault / ".kb/state/space-create-preview.json"
+            receipt = setup.load_json(receipt_path)
+            receipt["status"] = "outcome_unknown"
+            setup.atomic_write_json(receipt_path, receipt)
+            with self.assertRaises(setup.SetupError):
+                setup.preview_space_creation(vault, "另一个知识库", "", adapter)
+
+    def test_space_create_recovers_readback_without_duplicate_write(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            vault = Path(folder) / "admin"
+            setup.initialize(vault, "admin", "Example")
+            adapter = FakeSpaceSetupAdapter()
+            setup.preview_space_creation(vault, "企业知识库", "", adapter)
+            adapter.verify_failures = 1
+            with self.assertRaises(setup.SetupError):
+                setup.apply_space_creation(vault, "确认创建知识空间", adapter)
+            receipt = setup.load_json(vault / ".kb/state/space-create-preview.json")
+            self.assertEqual(receipt["status"], "created_unverified")
+            setup.atomic_write_json(
+                vault / ".kb/mappings/feishu_nodes.json",
+                {
+                    "version": 2,
+                    "space_name": "企业知识库",
+                    "space_id": "456",
+                    "nodes": [],
+                },
+            )
+            recovered = setup.apply_space_creation(
+                vault, "确认创建知识空间", adapter
+            )
+            self.assertTrue(recovered["recovered"])
+            self.assertEqual(recovered["remote_writes"], 0)
+            self.assertEqual(adapter.create_calls, 1)
+
+    def test_unknown_space_create_outcome_fails_closed_without_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            vault = Path(folder) / "admin"
+            setup.initialize(vault, "admin", "Example")
+            adapter = FakeSpaceSetupAdapter()
+            setup.preview_space_creation(vault, "企业知识库", "", adapter)
+            adapter.create_error = True
+            with self.assertRaises(setup.SetupError):
+                setup.apply_space_creation(vault, "确认创建知识空间", adapter)
+            receipt = setup.load_json(vault / ".kb/state/space-create-preview.json")
+            self.assertEqual(receipt["status"], "outcome_unknown")
+            with self.assertRaises(setup.SetupError):
+                setup.apply_space_creation(vault, "确认创建知识空间", adapter)
+            self.assertEqual(adapter.create_calls, 1)
+
     def test_employee_import_rejects_any_secret(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -284,7 +687,7 @@ class SetupWizardTests(unittest.TestCase):
             exported = setup.load_json(package)
             self.assertNotIn("app_secret", exported)
             self.assertNotIn("members", exported["membership_verification"])
-            self.assertEqual(exported["minimum_plugin_version"], "0.5.0")
+            self.assertEqual(exported["minimum_plugin_version"], "0.7.1")
             setup.initialize(employee, "employee", "")
             result = setup.import_company(employee, package)
             self.assertTrue(result["imported"])

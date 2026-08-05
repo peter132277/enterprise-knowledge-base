@@ -27,6 +27,8 @@ import source_link  # noqa: E402
 
 Runner = Callable[[list[str]], dict[str, Any]]
 TRANSIENT_WORDS = ("rate limit", "rate_limit", "timeout", "network", "transport")
+RECOVERY_SCHEMA = "kb-publish-recovery/v1"
+RECOVERY_CONFIRMATION = "确认恢复本次发布"
 
 
 class ExecutionError(RuntimeError):
@@ -263,7 +265,12 @@ def feishu_wiki_url(node_token: str, *known_urls: str) -> str:
     raise ExecutionError("Cannot derive the tenant Wiki URL for the created node.")
 
 
-def validate_active_item(vault: Path, item: dict[str, Any]) -> None:
+def validate_active_item(
+    vault: Path,
+    item: dict[str, Any],
+    *,
+    regenerate_payload: bool = True,
+) -> None:
     if item.get("scope") != "enterprise":
         raise ExecutionError("Only enterprise-scoped knowledge may be executed.")
     note = batch.resolve_in_vault(vault, item["note_relative"])
@@ -275,6 +282,13 @@ def validate_active_item(vault: Path, item: dict[str, Any]) -> None:
             raise ExecutionError(
                 f"Source changed after preview: {item['source_relative']}"
             )
+    if not regenerate_payload:
+        payload = batch.resolve_in_vault(vault, item["payload_relative"])
+        if not payload.is_file() or batch.sha256_file(payload) != item["payload_hash"]:
+            raise ExecutionError(
+                f"Payload changed after preview: {item['note_relative']}"
+            )
+        return
     prepared = batch.run_helper(
         SCRIPT_DIR / "prepare_publish.py",
         [
@@ -545,6 +559,391 @@ def runtime_from_item(item: dict[str, Any]) -> ItemRuntime:
             journal.get("feishu_url") or mapping.get("feishu_url") or ""
         ),
     )
+
+
+def expected_payload_content(
+    vault: Path,
+    item: dict[str, Any],
+    source_url: str,
+) -> tuple[str, str]:
+    """Build the immutable expected payload without writing a diagnostic file."""
+    base_payload = batch.resolve_in_vault(vault, item["payload_relative"])
+    content = base_payload.read_text(encoding="utf-8")
+    if item.get("source_relative"):
+        source = batch.resolve_in_vault(vault, item["source_relative"])
+        content = source_link.inject_source_link(
+            content,
+            source_name=source_display_name(vault, item, source),
+            source_url=source_url,
+            source_hash=batch.sha256_file(source),
+        )
+    return content, hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def recovery_item(manifest: dict[str, Any], item_id: str) -> dict[str, Any]:
+    item = next(
+        (
+            candidate
+            for candidate in manifest.get("items", [])
+            if candidate.get("item_id") == item_id
+        ),
+        None,
+    )
+    if item is None:
+        raise ExecutionError("Recovery item does not belong to this batch.")
+    if item.get("state") != "failed" or item.get("journal", {}).get("verified") is True:
+        raise ExecutionError("Recovery requires one failed, unverified batch item.")
+    runtime = runtime_from_item(item)
+    if not runtime.node_token or not runtime.obj_token:
+        raise ExecutionError("Recovery requires the existing failed Wiki document identifiers.")
+    return item
+
+
+def validate_recovery_mapping(vault: Path, item: dict[str, Any]) -> None:
+    documents = batch.load_json(
+        vault / ".kb/mappings/feishu_documents.json",
+        {"version": 2, "documents": []},
+    )
+    note = batch.resolve_in_vault(vault, item["note_relative"])
+    current = batch.safe_mapping_snapshot(
+        batch.resolve_document_mapping(vault, note, documents)
+    )
+    expected = item.get("mapping")
+    if current != expected:
+        raise ExecutionError(
+            f"Feishu document mapping changed after preview: {item['note_relative']}"
+        )
+
+
+def recovery_diagnosis(
+    vault: Path,
+    manifest_path: Path,
+    item_id: str,
+    *,
+    run: Runner,
+) -> tuple[Path, dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Read and classify one failed item. This function performs no writes."""
+    resolved, manifest, space_id, known_urls = load_confirmed_context(
+        vault,
+        manifest_path,
+        run,
+    )
+    item = recovery_item(manifest, item_id)
+    validate_active_item(vault, item, regenerate_payload=False)
+    validate_recovery_mapping(vault, item)
+    runtime = runtime_from_item(item)
+
+    children_payload = run(
+        [
+            "wiki",
+            "+node-list",
+            "--as",
+            "user",
+            "--space-id",
+            space_id,
+            "--parent-node-token",
+            item["parent_node_token"],
+            "--page-all",
+            "--format",
+            "json",
+        ]
+    )
+    if first_bool(children_payload, "has_more") is True:
+        raise ExecutionError("Wiki child listing did not exhaust pagination.")
+    matches = [
+        node
+        for node in extract_nodes(children_payload)
+        if first_string(node, "node_token") == runtime.node_token
+    ]
+    parent_verified = len(matches) == 1
+    listed_title = first_string(matches[0], "title") if parent_verified else ""
+    listed_obj = first_string(matches[0], "obj_token") if parent_verified else ""
+    if listed_obj and listed_obj != runtime.obj_token:
+        parent_verified = False
+
+    remote_markdown, fetch_payload = fetch_markdown(run, runtime.obj_token)
+    remote_title = first_string(fetch_payload, "title") or markdown_title(remote_markdown)
+    title_verified = bool(
+        (not remote_title or remote_title == item["title"])
+        and listed_title == item["title"]
+    )
+    source_verified = not bool(item.get("source_relative"))
+    if item.get("source_relative"):
+        if not runtime.source_url:
+            raise ExecutionError("Recovery cannot replace or re-upload a missing source file.")
+        _, inspected_name = verify_source_outside_wiki(
+            run,
+            source_url=runtime.source_url,
+            space_id=space_id,
+        )
+        source = batch.resolve_in_vault(vault, item["source_relative"])
+        display_name = source_display_name(vault, item, source)
+        source_verified = bool(
+            (not inspected_name or inspected_name == display_name)
+            and source_link.verify_source_link(
+                remote_markdown,
+                source_name=display_name,
+                source_url=runtime.source_url,
+            )["verified"]
+        )
+
+    expected, final_hash = expected_payload_content(vault, item, runtime.source_url)
+    comparison = source_link.compare_ignoring_source(expected, remote_markdown)
+    remote_hash = normalized_hash(remote_markdown)
+    prior_reason = str(item.get("journal", {}).get("reason") or "")
+    prior_recovery_status = str(
+        item.get("journal", {}).get("recovery", {}).get("status") or ""
+    )
+    recoverable_content_failure = bool(
+        prior_reason == "Read-back content does not match the immutable payload."
+        or prior_recovery_status == "outcome-unknown"
+    )
+    if not parent_verified:
+        action, reason = "blocked", "existing-node-not-under-locked-parent"
+    elif not title_verified:
+        action, reason = "blocked", "existing-title-does-not-match-batch"
+    elif not source_verified:
+        action, reason = "blocked", "source-readback-not-verified"
+    elif comparison["classification"] == "unsupported-structure":
+        action, reason = "blocked", "unsupported-markdown-structure"
+    elif comparison["match"]:
+        action, reason = "finalize-only", comparison["classification"]
+    elif not recoverable_content_failure:
+        action, reason = "blocked", "failure-not-recoverable-by-content"
+    else:
+        action, reason = "overwrite-existing", "semantic-content-difference"
+
+    revision = first_string(fetch_payload, "revision_id", "revision")
+    fingerprint_payload = {
+        "action": action,
+        "reason": reason,
+        "remote_hash": remote_hash,
+        "revision": revision,
+        "final_payload_hash": final_hash,
+        "classification": comparison["classification"],
+        "parent_verified": parent_verified,
+        "title_verified": title_verified,
+        "source_verified": source_verified,
+    }
+    diagnosis_hash = hashlib.sha256(
+        json.dumps(
+            fingerprint_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    diagnosis = {
+        **fingerprint_payload,
+        "schema": RECOVERY_SCHEMA,
+        "diagnosis_hash": diagnosis_hash,
+        "eligible": action != "blocked",
+        "item_id": item_id,
+        "title": item["title"],
+        "remote_markdown": remote_markdown,
+        "known_urls": known_urls,
+        "comparison": comparison,
+    }
+    return resolved, manifest, item, diagnosis
+
+
+def recovery_public_result(diagnosis: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "ok": diagnosis["eligible"],
+        "item_id": diagnosis["item_id"],
+        "title": diagnosis["title"],
+        "eligible": diagnosis["eligible"],
+        "action": diagnosis["action"],
+        "reason": diagnosis["reason"],
+        "classification": diagnosis["classification"],
+        "parent_verified": diagnosis["parent_verified"],
+        "title_verified": diagnosis["title_verified"],
+        "source_verified": diagnosis["source_verified"],
+        "remote_writes": 0,
+    }
+
+
+def diagnose_recovery(
+    vault: Path,
+    manifest_path: Path,
+    item_id: str,
+    *,
+    runner: Runner | None = None,
+) -> dict[str, Any]:
+    run = runner or lark_runner(vault)
+    _, _, _, diagnosis = recovery_diagnosis(
+        vault.resolve(), manifest_path, item_id, run=run
+    )
+    return recovery_public_result(diagnosis)
+
+
+def preview_recovery(
+    vault: Path,
+    manifest_path: Path,
+    item_id: str,
+    *,
+    runner: Runner | None = None,
+) -> dict[str, Any]:
+    run = runner or lark_runner(vault)
+    resolved, manifest, item, diagnosis = recovery_diagnosis(
+        vault.resolve(), manifest_path, item_id, run=run
+    )
+    recovery = {
+        "schema": RECOVERY_SCHEMA,
+        "status": "ready" if diagnosis["eligible"] else "blocked",
+        "action": diagnosis["action"],
+        "reason": diagnosis["reason"],
+        "diagnosis_hash": diagnosis["diagnosis_hash"],
+        "remote_hash": diagnosis["remote_hash"],
+        "revision": diagnosis["revision"],
+        "final_payload_hash": diagnosis["final_payload_hash"],
+        "confirmation": RECOVERY_CONFIRMATION,
+        "previewed_at": datetime.now().astimezone().isoformat(),
+    }
+    item.setdefault("journal", {})["recovery"] = recovery
+    batch.atomic_write_json(resolved, manifest)
+    return {
+        **recovery_public_result(diagnosis),
+        "confirmation_required": RECOVERY_CONFIRMATION,
+        "preview_recorded": True,
+    }
+
+
+def finalize_recovered_item(
+    vault: Path,
+    manifest_path: Path,
+    manifest: dict[str, Any],
+    item: dict[str, Any],
+    diagnosis: dict[str, Any],
+    runtime: ItemRuntime,
+    *,
+    synced_at: str | None,
+) -> dict[str, Any]:
+    reopened, _ = batch.record_outcome(
+        manifest,
+        item["item_id"],
+        "transient-failure",
+        reason="confirmed-recovery",
+    )
+    runtime.wiki_url = runtime.wiki_url or feishu_wiki_url(
+        runtime.node_token,
+        runtime.source_url,
+        *diagnosis["known_urls"],
+    )
+    successful, _ = batch.record_outcome(
+        reopened,
+        item["item_id"],
+        "success",
+        verified=True,
+        node_token=runtime.node_token,
+        obj_token=runtime.obj_token,
+        feishu_url=runtime.wiki_url,
+        source_file_url=runtime.source_url,
+        source_outside_wiki_verified=bool(
+            not item.get("source_relative") or diagnosis["source_verified"]
+        ),
+        final_payload_hash=diagnosis["final_payload_hash"],
+        last_synced_remote_hash=diagnosis["remote_hash"],
+        reason="recovery-readback-verified",
+    )
+    successful_item = next(
+        candidate
+        for candidate in successful["items"]
+        if candidate["item_id"] == item["item_id"]
+    )
+    successful_item.setdefault("journal", {}).setdefault("recovery", {}).update(
+        {
+            "schema": RECOVERY_SCHEMA,
+            "status": "verified",
+            "verified_at": datetime.now().astimezone().isoformat(),
+        }
+    )
+    local = batch.finalize_local_success(
+        vault,
+        manifest_path,
+        successful,
+        item["item_id"],
+        synced_at=synced_at,
+    )
+    return {"manifest": batch.load_json(manifest_path), "local": local}
+
+
+def confirm_recovery(
+    vault: Path,
+    manifest_path: Path,
+    item_id: str,
+    phrase: str,
+    *,
+    runner: Runner | None = None,
+    synced_at: str | None = None,
+) -> dict[str, Any]:
+    if phrase != RECOVERY_CONFIRMATION:
+        raise ExecutionError(f'Exact confirmation required: "{RECOVERY_CONFIRMATION}"')
+    run = runner or lark_runner(vault)
+    resolved, manifest, item, diagnosis = recovery_diagnosis(
+        vault.resolve(), manifest_path, item_id, run=run
+    )
+    previous = item.get("journal", {}).get("recovery", {})
+    if previous.get("status") != "ready":
+        raise ExecutionError("Run a successful recovery preview before confirmation.")
+    if previous.get("diagnosis_hash") != diagnosis["diagnosis_hash"]:
+        raise ExecutionError("Remote or local recovery evidence changed after preview.")
+    if not diagnosis["eligible"]:
+        raise ExecutionError(f"Recovery is blocked: {diagnosis['reason']}")
+
+    runtime = runtime_from_item(item)
+    remote_writes = 0
+    if diagnosis["action"] == "overwrite-existing":
+        item.setdefault("journal", {}).setdefault("recovery", {}).update(
+            {
+                "status": "executing",
+                "executing_at": datetime.now().astimezone().isoformat(),
+            }
+        )
+        batch.atomic_write_json(resolved, manifest)
+        runtime.remote_before = diagnosis["remote_markdown"]
+        runtime.remote_title = item["title"]
+        try:
+            final_hash, remote_hash = write_and_verify(vault, item, run, runtime)
+        except Exception as exc:
+            current = batch.load_json(resolved)
+            current_item = recovery_item(current, item_id)
+            current_item.setdefault("journal", {}).setdefault("recovery", {}).update(
+                {
+                    "schema": RECOVERY_SCHEMA,
+                    "status": "outcome-unknown",
+                    "reason": str(exc),
+                    "recorded_at": datetime.now().astimezone().isoformat(),
+                }
+            )
+            batch.atomic_write_json(resolved, current)
+            raise ExecutionError(
+                "Recovery write outcome is unknown; run diagnosis and preview again before any retry."
+            ) from exc
+        remote_writes = 1
+        diagnosis["final_payload_hash"] = final_hash
+        diagnosis["remote_hash"] = remote_hash
+
+    converged = finalize_recovered_item(
+        vault,
+        resolved,
+        manifest,
+        item,
+        diagnosis,
+        runtime,
+        synced_at=synced_at,
+    )
+    return {
+        "ok": True,
+        "item_id": item_id,
+        "action": diagnosis["action"],
+        "remote_writes": remote_writes,
+        "node_writes": 0,
+        "source_uploads": 0,
+        "state": converged["manifest"].get("state"),
+        "summary": converged["manifest"].get("summary", {}),
+        "local_finalized": converged["local"],
+    }
 
 
 def ensure_document(
@@ -959,11 +1358,19 @@ def main() -> int:
     parser.add_argument(
         "command",
         nargs="?",
-        choices=("preview", "confirm", "execute"),
+        choices=(
+            "preview",
+            "confirm",
+            "execute",
+            "diagnose",
+            "recover-preview",
+            "recover-confirm",
+        ),
         default="execute",
     )
     parser.add_argument("--vault", type=Path, default=Path("."))
     parser.add_argument("--batch", type=Path)
+    parser.add_argument("--item-id", default="")
     parser.add_argument("--phrase", default="")
     args = parser.parse_args()
     try:
@@ -983,7 +1390,25 @@ def main() -> int:
             print(json.dumps(result, ensure_ascii=False, indent=2))
             return 0
         if args.batch is None:
-            raise ExecutionError("--batch is required for confirmation or execution.")
+            raise ExecutionError("--batch is required for confirmation, execution, or recovery.")
+        if args.command in {"diagnose", "recover-preview", "recover-confirm"}:
+            if not args.item_id:
+                raise ExecutionError("--item-id is required for recovery.")
+            if args.command == "diagnose":
+                result = diagnose_recovery(vault, args.batch, args.item_id)
+            elif args.command == "recover-preview":
+                result = preview_recovery(vault, args.batch, args.item_id)
+            else:
+                result = confirm_recovery(
+                    vault,
+                    args.batch,
+                    args.item_id,
+                    args.phrase,
+                )
+                if result["ok"]:
+                    result["publisher_convergence"] = record_publisher_convergence(vault)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 0 if result["ok"] else 2
         if args.command == "confirm":
             batch.confirm_batch(vault, args.batch, args.phrase)
         result = execute_batch(vault, args.batch)

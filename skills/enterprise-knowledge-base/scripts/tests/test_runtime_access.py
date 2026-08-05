@@ -32,6 +32,21 @@ class RuntimeAccessTests(unittest.TestCase):
             with self.assertRaises(access.AccessError):
                 access.authorize(employee, "query")
 
+    def test_verified_new_empty_space_is_a_valid_mapping(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            admin = configure_admin(Path(folder) / "admin")
+            mapping_path = admin / ".kb/mappings/feishu_nodes.json"
+            mapping = setup.load_json(mapping_path)
+            mapping["nodes"] = []
+            setup.atomic_write_json(mapping_path, mapping)
+            verification_path = admin / ".kb/state/membership-verification.json"
+            verification = setup.load_json(verification_path)
+            verification["mapping_hash"] = access.canonical_hash(
+                access.mapping_value(admin)
+            )
+            setup.atomic_write_json(verification_path, verification)
+            self.assertTrue(access.authorize(admin, "query")["ok"])
+
     def test_policy_downgrade_and_mapping_drift_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
