@@ -46,6 +46,10 @@ class EnvironmentTests(unittest.TestCase):
             'plugin:\n  config_file_path: ".obsidian/plugins/plugin/data.json"\n',
             encoding="utf-8",
         )
+        (root / ".kb/config/organization.json").write_text(
+            '{"role":"local","feishu_enabled":false}\n',
+            encoding="utf-8",
+        )
         (root / ".kb/mappings/feishu_nodes.json").write_text(
             '{"nodes": [{"local_directory": "20_知识/企业"}]}\n',
             encoding="utf-8",
@@ -71,7 +75,6 @@ class EnvironmentTests(unittest.TestCase):
                 vault,
                 "all",
                 tool_lookup=lambda name: f"/tools/{name}",
-                obsidian_lookup=lambda: Path("/tools/obsidian"),
             )
             self.assertTrue(result["ok"], result["errors"])
             self.assertEqual(result["errors"], [])
@@ -84,7 +87,6 @@ class EnvironmentTests(unittest.TestCase):
                 vault,
                 "collect",
                 tool_lookup=lambda name: f"/tools/{name}",
-                obsidian_lookup=lambda: None,
             )
             self.assertFalse(result["ok"])
             self.assertTrue(
@@ -106,7 +108,6 @@ class EnvironmentTests(unittest.TestCase):
                 vault,
                 "collect",
                 tool_lookup=lambda name: f"/tools/{name}",
-                obsidian_lookup=lambda: None,
             )
             self.assertFalse(result["ok"])
             self.assertTrue(
@@ -124,10 +125,29 @@ class EnvironmentTests(unittest.TestCase):
                 vault,
                 "query",
                 tool_lookup=lambda name: None,
-                obsidian_lookup=lambda: None,
             )
             self.assertTrue(result["ok"])
-            self.assertEqual(len(result["warnings"]), 2)
+            self.assertEqual(result["warnings"], [{"code": "rg-unavailable", "fallback": "python"}])
+
+    def test_local_role_does_not_require_lark_cli(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            vault = Path(folder)
+            self.make_vault(vault)
+            result = ENV.run_checks(vault, "all", tool_lookup=lambda name: None)
+            self.assertTrue(result["ok"], result["errors"])
+            self.assertFalse(any(item["name"] == "lark-cli" for item in result["checks"]))
+
+    def test_feishu_role_requires_lark_cli_only_when_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            vault = Path(folder)
+            self.make_vault(vault)
+            (vault / ".kb/config/organization.json").write_text(
+                '{"role":"admin","feishu_enabled":true}\n',
+                encoding="utf-8",
+            )
+            result = ENV.run_checks(vault, "all", tool_lookup=lambda name: None)
+            self.assertFalse(result["ok"])
+            self.assertIn("lark-cli-unavailable", {item["code"] for item in result["errors"]})
 
 
 if __name__ == "__main__":

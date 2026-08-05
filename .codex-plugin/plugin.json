@@ -1,20 +1,20 @@
 {
   "name": "enterprise-knowledge-base",
-  "version": "0.4.1",
-  "description": "One-entry local and Feishu enterprise knowledge workflow with guided setup.",
+  "version": "0.5.0",
+  "description": "One-entry local Vault and confirmed Feishu enterprise knowledge workflow.",
   "author": {
     "name": "Enterprise Knowledge Base Team"
   },
   "skills": "./skills/",
   "interface": {
     "displayName": "企业知识库",
-    "shortDescription": "安装、查询、收录并安全发布企业知识",
-    "longDescription": "在一个 Codex 入口中完成本地 Vault 初始化、Obsidian 配置、知识查询与收录、飞书妙记转录和确认式企业知识发布。",
+    "shortDescription": "初始化、查询、收录并安全发布企业知识",
+    "longDescription": "由 Codex 直接初始化并读写当前项目的 Markdown 与附件，完成知识查询、收录、飞书妙记转录和确认式企业知识发布；Obsidian 仅用于人工浏览与编辑。",
     "developerName": "Enterprise Knowledge Base Team",
     "category": "Productivity",
     "capabilities": ["Interactive", "Write"],
     "defaultPrompt": [
-      "开始安装企业知识库",
+      "初始化当前知识库",
       "收录我刚发送的附件",
       "检查企业知识库状态"
     ]

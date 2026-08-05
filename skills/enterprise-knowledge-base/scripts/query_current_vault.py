@@ -12,7 +12,6 @@ import subprocess
 import sys
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -32,7 +31,7 @@ H1 = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
 TOKEN = re.compile(r"[A-Za-z0-9_+.-]+|[\u3400-\u9fff]+")
 MAX_RECALL_TERMS = 24
 MAX_RECALL_RESULTS = 2000
-OBSIDIAN_CLI_TIMEOUT_SECONDS = 12
+RECALL_TIMEOUT_SECONDS = 12
 
 
 class QueryError(RuntimeError):
@@ -138,180 +137,11 @@ def normalize_candidate(
     return candidate
 
 
-def registered_obsidian_cli_candidates() -> list[Path]:
-    if os.name != "nt":
-        return []
-    try:
-        import winreg
-    except ImportError:
-        return []
-
-    candidates: list[Path] = []
-    uninstall_key = r"Software\Microsoft\Windows\CurrentVersion\Uninstall"
-    views = (0, winreg.KEY_WOW64_64KEY, winreg.KEY_WOW64_32KEY)
-    for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
-        for view in views:
-            try:
-                root = winreg.OpenKey(
-                    hive,
-                    uninstall_key,
-                    0,
-                    winreg.KEY_READ | view,
-                )
-            except OSError:
-                continue
-            with root:
-                index = 0
-                while True:
-                    try:
-                        subkey_name = winreg.EnumKey(root, index)
-                    except OSError:
-                        break
-                    index += 1
-                    try:
-                        subkey = winreg.OpenKey(root, subkey_name)
-                    except OSError:
-                        continue
-                    with subkey:
-                        try:
-                            display_name = str(
-                                winreg.QueryValueEx(subkey, "DisplayName")[0]
-                            )
-                        except OSError:
-                            continue
-                        if display_name.strip().casefold() != "obsidian":
-                            continue
-                        for field in ("InstallLocation", "DisplayIcon"):
-                            try:
-                                value = str(winreg.QueryValueEx(subkey, field)[0])
-                            except OSError:
-                                continue
-                            value = value.strip().strip('"')
-                            if field == "DisplayIcon":
-                                value = re.sub(r",\d+$", "", value)
-                            path = Path(value)
-                            directory = path if path.is_dir() else path.parent
-                            candidates.append(directory / "Obsidian.com")
-    return candidates
-
-
-def find_obsidian_cli() -> Path | None:
-    candidates: list[Path] = []
-    configured = os.environ.get("OBSIDIAN_CLI_PATH", "").strip()
-    if configured:
-        candidates.append(Path(configured))
-    for name in ("obsidian", "Obsidian.com", "obsidian.com"):
-        found = shutil.which(name)
-        if found:
-            candidates.append(Path(found))
-    local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
-    if local_app_data:
-        candidates.extend(
-            (
-                Path(local_app_data) / "Programs" / "Obsidian" / "Obsidian.com",
-                Path(local_app_data) / "Obsidian" / "Obsidian.com",
-            )
-        )
-    candidates.extend(registered_obsidian_cli_candidates())
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate.resolve()
-    return None
-
-
 def subprocess_options() -> dict[str, Any]:
     options: dict[str, Any] = {}
     if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW"):
         options["creationflags"] = subprocess.CREATE_NO_WINDOW
     return options
-
-
-def recall_with_obsidian_cli(
-    vault: Path,
-    roots: list[Path],
-    terms: list[str],
-    cli_path: Path,
-) -> tuple[list[Path], dict[str, Any]]:
-    recall_query = " OR ".join(terms)
-    if not recall_query:
-        return [], {
-            "command_count": 0,
-            "elapsed_ms": 0,
-            "recall_query": "",
-        }
-
-    started = time.perf_counter()
-    directory_roots = [root for root in roots if root.is_dir()]
-
-    def search_root(root: Path) -> set[str]:
-        relative_root = root.relative_to(vault).as_posix()
-        command = [
-            str(cli_path),
-            "search",
-            f"query={recall_query}",
-            f"path={relative_root}",
-            f"limit={MAX_RECALL_RESULTS}",
-            "format=json",
-        ]
-        try:
-            process = subprocess.run(
-                command,
-                cwd=vault,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=OBSIDIAN_CLI_TIMEOUT_SECONDS,
-                check=False,
-                **subprocess_options(),
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise QueryError(f"Obsidian CLI failed: {exc}") from exc
-        output = process.stdout.strip()
-        if process.returncode != 0:
-            detail = (process.stderr or output).strip()[-400:]
-            raise QueryError(f"Obsidian CLI returned {process.returncode}: {detail}")
-        if output == "No matches found." or not output:
-            return set()
-        try:
-            payload = json.loads(output)
-        except json.JSONDecodeError as exc:
-            raise QueryError(
-                f"Obsidian CLI did not return JSON: {output[-400:]}"
-            ) from exc
-        if not isinstance(payload, list):
-            raise QueryError("Obsidian CLI search result must be a JSON list")
-        root_values: set[str] = set()
-        for item in payload:
-            if isinstance(item, str):
-                root_values.add(item)
-            elif isinstance(item, dict) and isinstance(item.get("file"), str):
-                root_values.add(str(item["file"]))
-        return root_values
-
-    values: set[str] = set()
-    if len(directory_roots) == 1:
-        values.update(search_root(directory_roots[0]))
-    elif directory_roots:
-        with ThreadPoolExecutor(max_workers=min(4, len(directory_roots))) as executor:
-            for root_values in executor.map(search_root, directory_roots):
-                values.update(root_values)
-
-    candidates: dict[str, Path] = {}
-    for value in values:
-        candidate = normalize_candidate(vault, roots, value)
-        if candidate is not None:
-            candidates[candidate.relative_to(vault).as_posix()] = candidate
-    for root in roots:
-        if root.is_file() and root.suffix.lower() in MARKDOWN_EXTENSIONS:
-            candidates[root.relative_to(vault).as_posix()] = root.resolve()
-    return [candidates[key] for key in sorted(candidates)], {
-        "command_count": len(directory_roots),
-        "parallel_workers": min(4, len(directory_roots)),
-        "elapsed_ms": round((time.perf_counter() - started) * 1000, 2),
-        "recall_query": recall_query,
-        "cli_path": str(cli_path),
-    }
 
 
 def recall_with_rg(
@@ -346,7 +176,7 @@ def recall_with_rg(
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=OBSIDIAN_CLI_TIMEOUT_SECONDS,
+            timeout=RECALL_TIMEOUT_SECONDS,
             check=False,
             **subprocess_options(),
         )
@@ -376,43 +206,21 @@ def retrieve_candidates(
     roots: list[Path],
     terms: list[str],
     backend: str,
-    allow_cli: bool,
 ) -> tuple[list[Path], str, dict[str, Any]]:
     fallback_reason = ""
-    if backend in ("auto", "obsidian-cli") and allow_cli:
-        cli_path = find_obsidian_cli()
-        if cli_path is None:
-            fallback_reason = "Obsidian CLI was not found"
-            if backend == "obsidian-cli":
-                raise QueryError(fallback_reason)
-        else:
-            try:
-                candidates, details = recall_with_obsidian_cli(
-                    vault, roots, terms, cli_path
-                )
-                return candidates, "obsidian-cli", details
-            except QueryError as exc:
-                fallback_reason = str(exc)
-                if backend == "obsidian-cli":
-                    raise
-
-    if backend in ("auto", "rg") or not allow_cli:
+    if backend in ("auto", "rg"):
         try:
             candidates, details = recall_with_rg(vault, roots, terms)
-            if fallback_reason:
-                details["fallback_from"] = "obsidian-cli"
-                details["fallback_reason"] = fallback_reason
             return candidates, "rg", details
         except QueryError as exc:
             if backend == "rg":
                 raise
-            fallback_reason = "; ".join(
-                value for value in (fallback_reason, str(exc)) if value
-            )
+            fallback_reason = str(exc)
 
     candidates = iter_markdown(vault, roots)
-    return candidates, "python-filesystem", {
-        "fallback_reason": fallback_reason or "No external recall backend was available"
+    return candidates, "python", {
+        "fallback_from": "rg" if fallback_reason else "",
+        "fallback_reason": fallback_reason or "Python backend selected explicitly",
     }
 
 
@@ -603,7 +411,6 @@ def run_query(
         roots,
         recall,
         backend,
-        allow_cli=enforce_project,
     )
     retrieval_duration_ms = (time.perf_counter() - retrieval_started) * 1000
     scoring_started = time.perf_counter()
@@ -683,9 +490,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-results", type=int, default=8)
     parser.add_argument(
         "--backend",
-        choices=("auto", "obsidian-cli", "rg"),
+        choices=("auto", "rg", "python"),
         default="auto",
-        help="Candidate recall backend; auto prefers Obsidian CLI and falls back to rg.",
+        help="Candidate recall backend; auto uses rg and falls back to Python.",
     )
     return parser
 

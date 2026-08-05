@@ -322,69 +322,53 @@ class QueryCurrentVaultTests(unittest.TestCase):
                     enforce_project=False,
                 )
 
-    def test_backend_router_prefers_obsidian_cli(self) -> None:
+    def test_backend_router_prefers_rg(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             vault = Path(folder)
             self.make_vault(vault)
             roots = [vault / "20_知识/企业"]
             expected = [vault / "20_知识/企业/销售方法.md"]
-            with (
-                patch.object(
-                    QUERY, "find_obsidian_cli", return_value=Path("Obsidian.com")
-                ),
-                patch.object(
-                    QUERY,
-                    "recall_with_obsidian_cli",
-                    return_value=(expected, {"elapsed_ms": 1.0}),
-                ) as cli_recall,
-                patch.object(QUERY, "recall_with_rg") as rg_recall,
-            ):
+            with patch.object(
+                QUERY,
+                "recall_with_rg",
+                return_value=(expected, {"elapsed_ms": 1.0}),
+            ) as rg_recall:
                 candidates, backend, details = QUERY.retrieve_candidates(
                     vault,
                     roots,
                     ["销售"],
                     "auto",
-                    allow_cli=True,
-                )
-            self.assertEqual(candidates, expected)
-            self.assertEqual(backend, "obsidian-cli")
-            self.assertEqual(details["elapsed_ms"], 1.0)
-            cli_recall.assert_called_once()
-            rg_recall.assert_not_called()
-
-    def test_backend_router_falls_back_to_rg(self) -> None:
-        with tempfile.TemporaryDirectory() as folder:
-            vault = Path(folder)
-            self.make_vault(vault)
-            roots = [vault / "20_知识/企业"]
-            expected = [vault / "20_知识/企业/销售方法.md"]
-            with (
-                patch.object(
-                    QUERY, "find_obsidian_cli", return_value=Path("Obsidian.com")
-                ),
-                patch.object(
-                    QUERY,
-                    "recall_with_obsidian_cli",
-                    side_effect=QUERY.QueryError("CLI unavailable"),
-                ),
-                patch.object(
-                    QUERY,
-                    "recall_with_rg",
-                    return_value=(expected, {"elapsed_ms": 2.0}),
-                ) as rg_recall,
-            ):
-                candidates, backend, details = QUERY.retrieve_candidates(
-                    vault,
-                    roots,
-                    ["销售"],
-                    "auto",
-                    allow_cli=True,
                 )
             self.assertEqual(candidates, expected)
             self.assertEqual(backend, "rg")
-            self.assertEqual(details["fallback_from"], "obsidian-cli")
-            self.assertEqual(details["fallback_reason"], "CLI unavailable")
+            self.assertEqual(details["elapsed_ms"], 1.0)
             rg_recall.assert_called_once()
+
+    def test_backend_router_falls_back_to_python(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            vault = Path(folder)
+            self.make_vault(vault)
+            roots = [vault / "20_知识/企业"]
+            expected = [vault / "20_知识/企业/销售方法.md"]
+            with patch.object(
+                QUERY,
+                "recall_with_rg",
+                side_effect=QUERY.QueryError("rg unavailable"),
+            ) as rg_recall, patch.object(
+                QUERY, "iter_markdown", return_value=expected
+            ) as python_recall:
+                candidates, backend, details = QUERY.retrieve_candidates(
+                    vault,
+                    roots,
+                    ["销售"],
+                    "auto",
+                )
+            self.assertEqual(candidates, expected)
+            self.assertEqual(backend, "python")
+            self.assertEqual(details["fallback_from"], "rg")
+            self.assertEqual(details["fallback_reason"], "rg unavailable")
+            rg_recall.assert_called_once()
+            python_recall.assert_called_once()
 
     def test_global_query_and_audit_bind_to_configured_vault(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

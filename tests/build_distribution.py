@@ -16,9 +16,6 @@ TOP_LEVEL = (
     ".codex-plugin",
     "assets",
     "skills",
-    "README.md",
-    "INSTALL.md",
-    "INSTALL_REQUIREMENTS.md",
 )
 FORBIDDEN_PARTS = {"tests", "__pycache__", ".pytest_cache", ".github"}
 FORBIDDEN_SUFFIXES = {".pyc", ".pyo", ".db", ".sqlite", ".sqlite3"}
